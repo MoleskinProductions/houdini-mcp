@@ -79,6 +79,16 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             '/parm/template': self.handle_parm_template,
             '/cook/status': self.handle_cook_status,
             '/hda/list': self.handle_hda_list,
+            # PDG/TOPs
+            '/pdg/status': self.handle_pdg_status,
+            '/pdg/workitems': self.handle_pdg_workitems,
+            # USD/LOPs
+            '/lop/stage/info': self.handle_lop_stage_info,
+            '/lop/prim/get': self.handle_lop_prim_get,
+            '/lop/layer/info': self.handle_lop_layer_info,
+            '/lop/prim/search': self.handle_lop_prim_search,
+            # HDA
+            '/hda/get': self.handle_hda_get,
         }
         
         handler = routes.get(route)
@@ -119,6 +129,16 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             '/render/snapshot': self.handle_render_snapshot,
             '/render/flipbook': self.handle_render_flipbook,
             '/batch': self.handle_batch,
+            # PDG/TOPs
+            '/pdg/cook': self.handle_pdg_cook,
+            '/pdg/dirty': self.handle_pdg_dirty,
+            '/pdg/cancel': self.handle_pdg_cancel,
+            # USD/LOPs
+            '/lop/import': self.handle_lop_import,
+            # HDA
+            '/hda/create': self.handle_hda_create,
+            '/hda/install': self.handle_hda_install,
+            '/hda/reload': self.handle_hda_reload,
         }
         
         handler = routes.get(route)
@@ -162,13 +182,13 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         @require_main_thread
         def get_info():
             hip = hou.hipFile
-            
+
             # Count nodes by context
             contexts = {}
             for ctx in ['/obj', '/shop', '/mat', '/stage', '/tasks', '/ch', '/out']:
                 node = hou.node(ctx)
                 contexts[ctx.lstrip('/')] = len(node.children()) if node else 0
-            
+
             return {
                 'hip_file': hip.path(),
                 'hip_name': hip.basename(),
@@ -178,9 +198,9 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 'current_frame': hou.frame(),
                 'time': hou.time(),
                 'contexts': contexts,
-                'memory_usage_mb': round(hou.memoryUsage() / (1024 * 1024), 2),
+                'memory_usage_mb': self._get_memory_mb(),
             }
-        
+
         self.send_json(get_info())
     
     def handle_node_get(self, params: dict):
@@ -349,8 +369,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 'is_cooking': hou.isSimulating(),
                 'current_frame': hou.frame(),
                 'current_time': hou.time(),
-                'memory_usage_mb': round(hou.memoryUsage() / (1024 * 1024), 2),
-                'cache_memory_mb': round(hou.cacheMemoryUsage() / (1024 * 1024), 2),
+                'memory_usage_mb': self._get_memory_mb(),
             }
         
         self.send_json(get_status())
@@ -363,13 +382,14 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def list_hdas():
             hdas = []
             for definition in hou.hda.loadedFiles():
-                for node_type in hou.hda.definitionsInFile(definition):
-                    if category and node_type.category().name() != category:
+                for defn in hou.hda.definitionsInFile(definition):
+                    cat_name = defn.nodeTypeCategory().name()
+                    if category and cat_name != category:
                         continue
                     hdas.append({
-                        'name': node_type.name(),
-                        'label': node_type.description(),
-                        'category': node_type.category().name(),
+                        'name': defn.nodeTypeName(),
+                        'label': defn.description(),
+                        'category': cat_name,
                         'file': definition,
                     })
             return {'hdas': hdas, 'count': len(hdas)}
@@ -1012,6 +1032,16 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
     # Internal Helpers
     # =========================================================================
     
+    @staticmethod
+    def _get_memory_mb() -> float:
+        """Get current process memory usage in MB."""
+        try:
+            import resource
+            # ru_maxrss is in KB on Linux
+            return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 2)
+        except Exception:
+            return -1
+
     def _serialize_node(self, node: 'hou.Node', include_parms: bool = False) -> dict:
         """Serialize a node to a dictionary."""
         data = {
@@ -1086,6 +1116,165 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             'value': list(parm_tuple.eval()),
         }
     
+    def _serialize_workitem(self, wi) -> dict:
+        """Serialize a PDG work item to a dictionary."""
+        state_raw = str(wi.state)
+        # Strip enum prefix like "workItemState.CookedSuccess" → "CookedSuccess"
+        state_str = state_raw.rsplit('.', 1)[-1] if '.' in state_raw else state_raw
+
+        data = {
+            'name': wi.name,
+            'index': wi.index,
+            'state': state_str,
+        }
+
+        # Attributes
+        try:
+            attrs = {}
+            for attr_name in wi.attribNames:
+                try:
+                    vals = wi.attribValue(attr_name)
+                    attrs[attr_name] = vals
+                except Exception:
+                    pass
+            if attrs:
+                data['attributes'] = attrs
+        except Exception:
+            pass
+
+        # Output files
+        try:
+            outputs = []
+            for result in wi.resultData:
+                outputs.append({
+                    'path': result.localize(),
+                    'tag': result.tag,
+                })
+            if outputs:
+                data['output_files'] = outputs
+        except Exception:
+            pass
+
+        return data
+
+    def _serialize_usd_prim(self, prim, include_attrs: bool = True) -> dict:
+        """Serialize a USD prim to a dictionary."""
+        data = {
+            'path': str(prim.GetPath()),
+            'type': str(prim.GetTypeName()),
+            'active': prim.IsActive(),
+        }
+
+        # Kind
+        try:
+            from pxr import Kind, Usd
+            model = Usd.ModelAPI(prim)
+            data['kind'] = model.GetKind()
+        except Exception:
+            data['kind'] = ''
+
+        # Purpose
+        try:
+            from pxr import UsdGeom
+            imageable = UsdGeom.Imageable(prim)
+            data['purpose'] = imageable.GetPurposeAttr().Get()
+        except Exception:
+            data['purpose'] = ''
+
+        # Children
+        children = []
+        for child in prim.GetChildren():
+            children.append({
+                'path': str(child.GetPath()),
+                'type': str(child.GetTypeName()),
+            })
+        data['children'] = children
+
+        # Has references
+        try:
+            data['has_references'] = prim.HasAuthoredReferences()
+        except Exception:
+            data['has_references'] = False
+
+        # Attributes
+        if include_attrs:
+            attributes = []
+            for attr in prim.GetAttributes():
+                attr_data = {
+                    'name': attr.GetName(),
+                    'type': str(attr.GetTypeName()),
+                }
+                try:
+                    val = attr.Get()
+                    # Convert non-serializable types to string
+                    if val is not None:
+                        try:
+                            json.dumps(val)
+                            attr_data['value'] = val
+                        except (TypeError, ValueError):
+                            attr_data['value'] = str(val)
+                except Exception:
+                    attr_data['value'] = None
+                attributes.append(attr_data)
+            data['attributes'] = attributes
+
+        return data
+
+    def _serialize_hda_definition(self, definition) -> dict:
+        """Serialize an HDA definition to a dictionary."""
+        data = {
+            'type_name': definition.nodeTypeName(),
+            'description': definition.description(),
+            'library_file': definition.libraryFilePath(),
+            'category': definition.nodeTypeCategory().name(),
+        }
+
+        try:
+            data['version'] = definition.version()
+        except Exception:
+            data['version'] = ''
+
+        try:
+            data['is_current'] = definition.isCurrent()
+        except Exception:
+            data['is_current'] = None
+
+        try:
+            data['is_preferred'] = definition.isPreferred()
+        except Exception:
+            data['is_preferred'] = None
+
+        try:
+            data['min_inputs'] = definition.minNumInputs()
+            data['max_inputs'] = definition.maxNumInputs()
+        except Exception:
+            pass
+
+        try:
+            data['min_outputs'] = definition.minNumOutputs()
+            data['max_outputs'] = definition.maxNumOutputs()
+        except Exception:
+            pass
+
+        # Sections
+        try:
+            sections = []
+            for name in definition.sections():
+                sections.append(name)
+            data['sections'] = sections
+        except Exception:
+            data['sections'] = []
+
+        # Embedded help
+        try:
+            help_text = definition.embeddedHelp()
+            if help_text:
+                data['help'] = help_text[:2000]  # Truncate long help
+        except Exception:
+            pass
+
+        return data
+
     def _batch_create(self, args: dict) -> dict:
         """Internal create for batch operations."""
         parent = hou.node(args.get('parent', '/obj'))
@@ -1131,6 +1320,669 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             node.bypass(value)
         return {'success': True}
     
+    # =========================================================================
+    # PDG/TOPs Handlers
+    # =========================================================================
+
+    def handle_pdg_status(self, params: dict):
+        """Get PDG graph context state and work item counts."""
+        path = params.get('path')
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def get_status():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                ctx = node.getPDGGraphContext()
+            except AttributeError:
+                return {'error': f'Node is not a TOP network or node: {path}'}
+
+            if ctx is None:
+                return {'error': f'No PDG graph context found at: {path}'}
+
+            try:
+                cook_state = str(ctx.cookState())
+            except Exception:
+                cook_state = 'unknown'
+
+            # Gather work item stats across all nodes in the graph
+            state_counts = {
+                'waiting': 0,
+                'uncooked': 0,
+                'cooking': 0,
+                'cooked': 0,
+                'success': 0,
+                'failed': 0,
+                'cancelled': 0,
+                'total': 0,
+            }
+
+            # Map PDG state enum names to our bucket names
+            _state_map = {
+                'waiting': 'waiting',
+                'uncooked': 'uncooked',
+                'cooking': 'cooking',
+                'cookedsuccess': 'success',
+                'cooked': 'cooked',
+                'cookedfail': 'failed',
+                'cookedcancel': 'cancelled',
+            }
+
+            top_nodes = []
+            try:
+                # Iterate TOP nodes within this context
+                child_cat = node.type().childTypeCategory()
+                is_top_container = child_cat is not None and child_cat.name() == 'Top'
+                container = node if is_top_container else node.parent()
+                if container:
+                    for child in container.children():
+                        try:
+                            pdg_node = child.getPDGNode()
+                            if pdg_node:
+                                top_nodes.append(child.path())
+                                for wi in pdg_node.workItems:
+                                    raw = str(wi.state)
+                                    key = raw.rsplit('.', 1)[-1].lower() if '.' in raw else raw.lower()
+                                    bucket = _state_map.get(key)
+                                    state_counts['total'] += 1
+                                    if bucket and bucket in state_counts:
+                                        state_counts[bucket] += 1
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+            return {
+                'path': path,
+                'cook_state': cook_state,
+                'work_item_counts': state_counts,
+                'top_node_count': len(top_nodes),
+            }
+
+        self.send_json(get_status())
+
+    def handle_pdg_workitems(self, params: dict):
+        """Get work items from a TOP node."""
+        path = params.get('path')
+        state_filter = params.get('state')
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def get_workitems():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                pdg_node = node.getPDGNode()
+            except AttributeError:
+                return {'error': f'Node is not a TOP node: {path}'}
+
+            if pdg_node is None:
+                return {'error': f'No PDG node found at: {path}'}
+
+            # Map filter names to PDG state suffixes
+            _filter_map = {
+                'waiting': 'waiting',
+                'uncooked': 'uncooked',
+                'cooking': 'cooking',
+                'cooked': 'cooked',
+                'success': 'cookedsuccess',
+                'failed': 'cookedfail',
+                'cancelled': 'cookedcancel',
+            }
+
+            items = []
+            for wi in pdg_node.workItems:
+                if state_filter:
+                    raw = str(wi.state)
+                    key = raw.rsplit('.', 1)[-1].lower() if '.' in raw else raw.lower()
+                    target = _filter_map.get(state_filter.lower(), state_filter.lower())
+                    if key != target:
+                        continue
+                items.append(self._serialize_workitem(wi))
+
+            return {
+                'path': path,
+                'work_items': items,
+                'count': len(items),
+            }
+
+        self.send_json(get_workitems())
+
+    def handle_pdg_cook(self, body: dict):
+        """Cook a PDG/TOP graph (non-blocking)."""
+        path = body.get('path')
+        tops_only = body.get('tops_only', True)
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def cook():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                ctx = node.getPDGGraphContext()
+            except AttributeError:
+                return {'error': f'Node is not a TOP network or node: {path}'}
+
+            if ctx is None:
+                return {'error': f'No PDG graph context found at: {path}'}
+
+            try:
+                if tops_only:
+                    node.executeGraph(False, False, False, False)
+                else:
+                    ctx.cook(block=False)
+                return {
+                    'success': True,
+                    'path': path,
+                    'message': 'Cook initiated (non-blocking). Use houdini_pdg_status to poll progress.',
+                }
+            except Exception as e:
+                return {'error': f'Failed to cook PDG graph: {str(e)}'}
+
+        self.send_json(cook())
+
+    def handle_pdg_dirty(self, body: dict):
+        """Dirty PDG work items."""
+        path = body.get('path')
+        dirty_all = body.get('dirty_all', False)
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def dirty():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                ctx = node.getPDGGraphContext()
+            except AttributeError:
+                return {'error': f'Node is not a TOP network or node: {path}'}
+
+            if ctx is None:
+                return {'error': f'No PDG graph context found at: {path}'}
+
+            try:
+                if dirty_all:
+                    # Dirty all TOP nodes in the network
+                    child_cat = node.type().childTypeCategory()
+                    is_top_container = child_cat is not None and child_cat.name() == 'Top'
+                    container = node if is_top_container else node.parent()
+                    if container:
+                        for child in container.children():
+                            try:
+                                child.dirtyAllTasks(False)
+                            except Exception:
+                                continue
+                else:
+                    node.dirtyAllTasks(False)
+                return {'success': True, 'path': path, 'dirty_all': dirty_all}
+            except Exception as e:
+                return {'error': f'Failed to dirty PDG tasks: {str(e)}'}
+
+        self.send_json(dirty())
+
+    def handle_pdg_cancel(self, body: dict):
+        """Cancel a PDG cook."""
+        path = body.get('path')
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def cancel():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                ctx = node.getPDGGraphContext()
+            except AttributeError:
+                return {'error': f'Node is not a TOP network or node: {path}'}
+
+            if ctx is None:
+                return {'error': f'No PDG graph context found at: {path}'}
+
+            try:
+                ctx.cancelCook()
+                return {'success': True, 'path': path}
+            except Exception as e:
+                return {'error': f'Failed to cancel PDG cook: {str(e)}'}
+
+        self.send_json(cancel())
+
+    # =========================================================================
+    # USD/Solaris/LOP Handlers
+    # =========================================================================
+
+    def handle_lop_stage_info(self, params: dict):
+        """Get USD stage information from a LOP node."""
+        path = params.get('path')
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def get_info():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                stage = node.stage()
+            except AttributeError:
+                return {'error': f'Node is not a LOP node: {path}'}
+
+            if stage is None:
+                return {'error': f'No USD stage at: {path}'}
+
+            # Count prims
+            prim_count = 0
+            root_prims = []
+            for prim in stage.Traverse():
+                prim_count += 1
+
+            for prim in stage.GetPseudoRoot().GetChildren():
+                root_prims.append({
+                    'path': str(prim.GetPath()),
+                    'type': str(prim.GetTypeName()),
+                })
+
+            # Default prim
+            default_prim = None
+            try:
+                dp = stage.GetDefaultPrim()
+                if dp:
+                    default_prim = str(dp.GetPath())
+            except Exception:
+                pass
+
+            # Layer stack
+            layer_count = 0
+            try:
+                layer_count = len(stage.GetLayerStack())
+            except Exception:
+                pass
+
+            # Time codes
+            start_time = None
+            end_time = None
+            try:
+                if stage.HasAuthoredTimeCodeRange():
+                    start_time = stage.GetStartTimeCode()
+                    end_time = stage.GetEndTimeCode()
+            except Exception:
+                pass
+
+            return {
+                'path': path,
+                'prim_count': prim_count,
+                'root_prims': root_prims,
+                'default_prim': default_prim,
+                'layer_count': layer_count,
+                'start_time_code': start_time,
+                'end_time_code': end_time,
+            }
+
+        self.send_json(get_info())
+
+    def handle_lop_prim_get(self, params: dict):
+        """Get detailed info about a USD prim."""
+        path = params.get('path')
+        prim_path = params.get('prim_path')
+        include_attrs = params.get('include_attrs', 'true').lower() == 'true'
+
+        if not path or not prim_path:
+            self.send_error_json(400, "Missing 'path' or 'prim_path' parameter")
+            return
+
+        @require_main_thread
+        def get_prim():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                stage = node.stage()
+            except AttributeError:
+                return {'error': f'Node is not a LOP node: {path}'}
+
+            if stage is None:
+                return {'error': f'No USD stage at: {path}'}
+
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim or not prim.IsValid():
+                return {'error': f'Prim not found: {prim_path}'}
+
+            return self._serialize_usd_prim(prim, include_attrs=include_attrs)
+
+        self.send_json(get_prim())
+
+    def handle_lop_layer_info(self, params: dict):
+        """Get USD layer stack information."""
+        path = params.get('path')
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def get_layers():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                stage = node.stage()
+            except AttributeError:
+                return {'error': f'Node is not a LOP node: {path}'}
+
+            if stage is None:
+                return {'error': f'No USD stage at: {path}'}
+
+            layers = []
+            try:
+                for layer in stage.GetLayerStack():
+                    layer_info = {
+                        'identifier': layer.identifier,
+                        'sublayer_paths': list(layer.subLayerPaths),
+                    }
+                    # Root prims authored in this layer
+                    try:
+                        layer_info['root_prim_paths'] = [
+                            str(p.path) for p in layer.rootPrims
+                        ]
+                    except Exception:
+                        layer_info['root_prim_paths'] = []
+                    layers.append(layer_info)
+            except Exception as e:
+                return {'error': f'Failed to read layer stack: {str(e)}'}
+
+            # Active layer
+            active_layer_id = None
+            try:
+                active_layer_id = node.activeLayer().identifier
+            except Exception:
+                pass
+
+            return {
+                'path': path,
+                'active_layer': active_layer_id,
+                'layers': layers,
+                'count': len(layers),
+            }
+
+        self.send_json(get_layers())
+
+    def handle_lop_prim_search(self, params: dict):
+        """Search for USD prims by path pattern and/or type."""
+        path = params.get('path')
+        pattern = params.get('pattern', '/**')
+        type_name = params.get('type_name')
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def search():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            try:
+                stage = node.stage()
+            except AttributeError:
+                return {'error': f'Node is not a LOP node: {path}'}
+
+            if stage is None:
+                return {'error': f'No USD stage at: {path}'}
+
+            results = []
+            try:
+                rule = hou.LopSelectionRule()
+                rule.setPathPattern(pattern)
+                expanded = rule.expandedPaths(lopnode=node)
+
+                for prim_path in expanded:
+                    prim = stage.GetPrimAtPath(str(prim_path))
+                    if not prim or not prim.IsValid():
+                        continue
+
+                    prim_type = str(prim.GetTypeName())
+                    if type_name and prim_type != type_name:
+                        continue
+
+                    kind = ''
+                    try:
+                        from pxr import UsdGeom
+                        model = pxr.Usd.ModelAPI(prim)
+                        kind = model.GetKind()
+                    except Exception:
+                        pass
+
+                    results.append({
+                        'path': str(prim.GetPath()),
+                        'type': prim_type,
+                        'kind': kind,
+                    })
+            except Exception as e:
+                return {'error': f'Search failed: {str(e)}'}
+
+            return {
+                'node_path': path,
+                'pattern': pattern,
+                'results': results,
+                'count': len(results),
+            }
+
+        self.send_json(search())
+
+    def handle_lop_import(self, body: dict):
+        """Import a USD file into a LOP network."""
+        path = body.get('path')
+        file_path = body.get('file')
+        method = body.get('method', 'reference')
+        prim_path = body.get('prim_path')
+
+        if not path or not file_path:
+            self.send_error_json(400, "Missing 'path' or 'file' parameter")
+            return
+
+        if method not in ('reference', 'sublayer'):
+            self.send_error_json(400, "method must be 'reference' or 'sublayer'")
+            return
+
+        @require_main_thread
+        def do_import():
+            parent = hou.node(path)
+            if not parent:
+                return {'error': f'Parent node not found: {path}'}
+
+            try:
+                with hou.undos.group("MCP: LOP Import"):
+                    node = parent.createNode(method)
+
+                    # Set file path
+                    file_parm = node.parm('filepath') or node.parm('filepath1') or node.parm('fileName')
+                    if file_parm:
+                        file_parm.set(file_path)
+
+                    # Set prim path if applicable
+                    if prim_path and method == 'reference':
+                        prim_parm = node.parm('primpath') or node.parm('primpath1')
+                        if prim_parm:
+                            prim_parm.set(prim_path)
+
+                    parent.layoutChildren()
+
+                    return {
+                        'success': True,
+                        'node_path': node.path(),
+                        'method': method,
+                        'file': file_path,
+                    }
+            except Exception as e:
+                return {'error': f'Import failed: {str(e)}'}
+
+        self.send_json(do_import())
+
+    # =========================================================================
+    # HDA Management Handlers
+    # =========================================================================
+
+    def handle_hda_get(self, params: dict):
+        """Get detailed HDA definition info."""
+        node_type = params.get('node_type')
+        category = params.get('category')
+
+        if not node_type:
+            self.send_error_json(400, "Missing 'node_type' parameter")
+            return
+
+        @require_main_thread
+        def get_hda():
+            try:
+                cat = hou.nodeTypeCategories().get(category) if category else None
+
+                # Search through node type categories
+                definition = None
+                if cat:
+                    nt = cat.nodeTypes().get(node_type)
+                    if nt:
+                        definition = nt.definition()
+                else:
+                    for cat_name, cat_obj in hou.nodeTypeCategories().items():
+                        nt = cat_obj.nodeTypes().get(node_type)
+                        if nt and nt.definition():
+                            definition = nt.definition()
+                            break
+
+                if not definition:
+                    return {'error': f'HDA definition not found: {node_type}'}
+
+                return self._serialize_hda_definition(definition)
+            except Exception as e:
+                return {'error': f'Failed to get HDA info: {str(e)}'}
+
+        self.send_json(get_hda())
+
+    def handle_hda_create(self, body: dict):
+        """Create an HDA from a node."""
+        node_path = body.get('node_path')
+        name = body.get('name')
+        label = body.get('label')
+        file_path = body.get('file_path')
+        version = body.get('version')
+        min_inputs = body.get('min_inputs')
+        max_inputs = body.get('max_inputs')
+
+        if not all([node_path, name, label, file_path]):
+            self.send_error_json(400, "Missing required parameters: node_path, name, label, file_path")
+            return
+
+        @require_main_thread
+        def create_hda():
+            node = hou.node(node_path)
+            if not node:
+                return {'error': f'Node not found: {node_path}'}
+
+            try:
+                with hou.undos.group("MCP: Create HDA"):
+                    hda_node = node.createDigitalAsset(
+                        name=name,
+                        hda_file_name=file_path,
+                        description=label,
+                    )
+
+                    definition = hda_node.type().definition()
+
+                    if version and definition:
+                        definition.setVersion(version)
+                    if min_inputs is not None and definition:
+                        definition.setMinNumInputs(min_inputs)
+                    if max_inputs is not None and definition:
+                        definition.setMaxNumInputs(max_inputs)
+
+                    return {
+                        'success': True,
+                        'file_path': file_path,
+                        'type_name': name,
+                        'node_path': hda_node.path(),
+                    }
+            except Exception as e:
+                return {'error': f'Failed to create HDA: {str(e)}'}
+
+        self.send_json(create_hda())
+
+    def handle_hda_install(self, body: dict):
+        """Install an HDA file."""
+        file_path = body.get('file_path')
+
+        if not file_path:
+            self.send_error_json(400, "Missing 'file_path' parameter")
+            return
+
+        @require_main_thread
+        def install():
+            try:
+                hou.hda.installFile(file_path)
+
+                # Get installed definitions
+                definitions = []
+                for defn in hou.hda.definitionsInFile(file_path):
+                    definitions.append({
+                        'name': defn.nodeTypeName(),
+                        'category': defn.nodeTypeCategory().name(),
+                        'description': defn.description(),
+                    })
+
+                return {
+                    'success': True,
+                    'file_path': file_path,
+                    'definitions': definitions,
+                    'count': len(definitions),
+                }
+            except Exception as e:
+                return {'error': f'Failed to install HDA: {str(e)}'}
+
+        self.send_json(install())
+
+    def handle_hda_reload(self, body: dict):
+        """Reload HDA definitions."""
+        file_path = body.get('file_path')
+
+        @require_main_thread
+        def reload():
+            try:
+                if file_path:
+                    hou.hda.reloadFile(file_path)
+                    return {'success': True, 'file_path': file_path}
+                else:
+                    hou.hda.reloadAllFiles(rescan=True)
+                    return {'success': True, 'message': 'All HDA files reloaded'}
+            except Exception as e:
+                return {'error': f'Failed to reload HDA: {str(e)}'}
+
+        self.send_json(reload())
+
     # =========================================================================
     # Response Helpers
     # =========================================================================

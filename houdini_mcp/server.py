@@ -567,6 +567,282 @@ TOOLS = [
             "required": ["operations"]
         }
     ),
+
+    # --- PDG/TOPs Operations ---
+    Tool(
+        name="houdini_pdg_status",
+        description="Get PDG/TOPs graph status including cook state and work item counts by state (waiting, cooking, success, fail). Use to monitor TOP network progress.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a TOP network or TOP node, e.g., '/tasks/topnet1'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_pdg_workitems",
+        description="Get work items from a TOP node with their name, index, state, attributes, and output files.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a TOP node, e.g., '/tasks/topnet1/ropfetch1'"
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["waiting", "uncooked", "cooking", "cooked", "success", "failed", "cancelled"],
+                    "description": "Optional filter by work item state"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_pdg_cook",
+        description="Start cooking a PDG/TOP graph (non-blocking). Use houdini_pdg_status to poll progress after starting.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a TOP network or node"
+                },
+                "tops_only": {
+                    "type": "boolean",
+                    "description": "If true (default), generate and cook work items. If false, use full graph cook.",
+                    "default": True
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_pdg_dirty",
+        description="Dirty (invalidate) PDG work items so they will re-cook.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a TOP network or node"
+                },
+                "dirty_all": {
+                    "type": "boolean",
+                    "description": "If true, dirty all work items in the graph. If false (default), dirty only the specified node's tasks.",
+                    "default": False
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_pdg_cancel",
+        description="Cancel a running PDG/TOP cook.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the TOP network"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+
+    # --- USD/Solaris/LOP Operations ---
+    Tool(
+        name="houdini_lop_stage_info",
+        description="Get USD stage information from a LOP node: prim count, root prims, default prim, layer count, and time code range.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a LOP node, e.g., '/stage/sublayer1'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_lop_prim_get",
+        description="Get detailed info about a specific USD prim including type, kind, active status, children, and attributes.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the LOP node"
+                },
+                "prim_path": {
+                    "type": "string",
+                    "description": "USD prim path, e.g., '/world/geo'"
+                },
+                "include_attrs": {
+                    "type": "boolean",
+                    "description": "Whether to include attribute values (default: true)",
+                    "default": True
+                }
+            },
+            "required": ["path", "prim_path"]
+        }
+    ),
+    Tool(
+        name="houdini_lop_layer_info",
+        description="Get USD layer stack information: layer identifiers, sublayer paths, and authored prims per layer.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a LOP node"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_lop_prim_search",
+        description="Search for USD prims by path pattern and/or type name. Supports glob-style patterns like '/world/**'.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a LOP node"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Prim path pattern, e.g., '/world/**' or '/*'",
+                    "default": "/**"
+                },
+                "type_name": {
+                    "type": "string",
+                    "description": "Optional USD type filter, e.g., 'Mesh', 'Xform', 'DistantLight'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_lop_import",
+        description="Import a USD file into a LOP network by creating a reference or sublayer node.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Parent LOP network path, e.g., '/stage'"
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Path to the USD file to import"
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["reference", "sublayer"],
+                    "description": "Import method (default: reference)",
+                    "default": "reference"
+                },
+                "prim_path": {
+                    "type": "string",
+                    "description": "Optional target prim path (for reference method)"
+                }
+            },
+            "required": ["path", "file"]
+        }
+    ),
+
+    # --- HDA Management Operations ---
+    Tool(
+        name="houdini_hda_get",
+        description="Get detailed HDA definition info: library file, version, description, help text, sections, inputs/outputs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "node_type": {
+                    "type": "string",
+                    "description": "HDA type name to look up, e.g., 'my_hda'"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional node category filter, e.g., 'Sop', 'Object', 'Lop'"
+                }
+            },
+            "required": ["node_type"]
+        }
+    ),
+    Tool(
+        name="houdini_hda_create",
+        description="Create an HDA (Houdini Digital Asset) from an existing node. Packages the node into a reusable .hda file.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "node_path": {
+                    "type": "string",
+                    "description": "Path to the source node to package"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "HDA type name"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Human-readable label/description"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Where to save the .hda file"
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Optional version string"
+                },
+                "min_inputs": {
+                    "type": "integer",
+                    "description": "Minimum number of inputs"
+                },
+                "max_inputs": {
+                    "type": "integer",
+                    "description": "Maximum number of inputs"
+                }
+            },
+            "required": ["node_path", "name", "label", "file_path"]
+        }
+    ),
+    Tool(
+        name="houdini_hda_install",
+        description="Install an HDA file into the current Houdini session.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the .hda file to install"
+                }
+            },
+            "required": ["file_path"]
+        }
+    ),
+    Tool(
+        name="houdini_hda_reload",
+        description="Reload HDA definitions. Reloads a specific file or all HDA files if no path specified.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Optional path to a specific .hda file to reload. If omitted, reloads all HDA files."
+                }
+            }
+        }
+    ),
 ]
 
 
@@ -625,6 +901,40 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             'houdini_render_snapshot': ('POST', '/render/snapshot', arguments),
             'houdini_render_flipbook': ('POST', '/render/flipbook', arguments),
             'houdini_batch': ('POST', '/batch', arguments),
+
+            # PDG/TOPs
+            'houdini_pdg_status': ('GET', '/pdg/status', {'path': arguments.get('path')}),
+            'houdini_pdg_workitems': ('GET', '/pdg/workitems', {
+                'path': arguments.get('path'),
+                'state': arguments.get('state'),
+            }),
+            'houdini_pdg_cook': ('POST', '/pdg/cook', arguments),
+            'houdini_pdg_dirty': ('POST', '/pdg/dirty', arguments),
+            'houdini_pdg_cancel': ('POST', '/pdg/cancel', arguments),
+
+            # USD/Solaris/LOPs
+            'houdini_lop_stage_info': ('GET', '/lop/stage/info', {'path': arguments.get('path')}),
+            'houdini_lop_prim_get': ('GET', '/lop/prim/get', {
+                'path': arguments.get('path'),
+                'prim_path': arguments.get('prim_path'),
+                'include_attrs': arguments.get('include_attrs', True),
+            }),
+            'houdini_lop_layer_info': ('GET', '/lop/layer/info', {'path': arguments.get('path')}),
+            'houdini_lop_prim_search': ('GET', '/lop/prim/search', {
+                'path': arguments.get('path'),
+                'pattern': arguments.get('pattern', '/**'),
+                'type_name': arguments.get('type_name'),
+            }),
+            'houdini_lop_import': ('POST', '/lop/import', arguments),
+
+            # HDA Management
+            'houdini_hda_get': ('GET', '/hda/get', {
+                'node_type': arguments.get('node_type'),
+                'category': arguments.get('category'),
+            }),
+            'houdini_hda_create': ('POST', '/hda/create', arguments),
+            'houdini_hda_install': ('POST', '/hda/install', arguments),
+            'houdini_hda_reload': ('POST', '/hda/reload', arguments),
         }
         
         if name not in tool_map:
