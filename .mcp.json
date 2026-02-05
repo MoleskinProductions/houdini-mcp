@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "houdini": {
-      "command": "python",
-      "args": ["-m", "houdini_mcp.server"],
-      "cwd": "."
-    }
-  }
-}

@@ -26,7 +26,7 @@ The architecture consists of two components:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/houdini-mcp.git
+git clone https://github.com/MoleskinProductions/houdini-mcp.git
 cd houdini-mcp
 ```
 
@@ -147,7 +147,35 @@ Set npts = 5000 on /obj/geo1/scatter1
 | `houdini_frame_set` | Set current frame |
 | `houdini_scene_save` | Save the scene |
 | `houdini_geo_export` | Export geometry to file |
+| `houdini_render_snapshot` | Capture viewport or Karma render snapshot |
+| `houdini_render_flipbook` | Render a flipbook frame sequence |
 | `houdini_batch` | Execute multiple operations atomically |
+
+### PDG/TOPs Operations
+| Tool | Description |
+|------|-------------|
+| `houdini_pdg_status` | Get graph cook state and work item counts |
+| `houdini_pdg_workitems` | List work items with state, attributes, output files |
+| `houdini_pdg_cook` | Start cooking a TOP graph (non-blocking) |
+| `houdini_pdg_dirty` | Dirty/invalidate work items for re-cook |
+| `houdini_pdg_cancel` | Cancel a running PDG cook |
+
+### USD/Solaris/LOP Operations
+| Tool | Description |
+|------|-------------|
+| `houdini_lop_stage_info` | Get USD stage info (prim count, layers, time codes) |
+| `houdini_lop_prim_get` | Get detailed USD prim info |
+| `houdini_lop_layer_info` | Get layer stack information |
+| `houdini_lop_prim_search` | Search prims by path pattern and/or type |
+| `houdini_lop_import` | Import USD file as reference or sublayer |
+
+### HDA Management
+| Tool | Description |
+|------|-------------|
+| `houdini_hda_get` | Get detailed HDA definition info |
+| `houdini_hda_create` | Package a node into a reusable .hda file |
+| `houdini_hda_install` | Install an HDA file into the session |
+| `houdini_hda_reload` | Reload HDA definitions (specific file or all) |
 
 ## Auto-Start Bridge (Optional)
 
@@ -205,9 +233,10 @@ ruff check .
 - [x] **Phase 1**: Core bridge and read tools
 - [x] **Phase 2**: Mutation tools (create, connect, set)
 - [x] **Phase 3**: Geometry export
-- [ ] **Phase 4**: MCP Apps (interactive UI in Claude)
-- [ ] **Phase 5**: PDG/TOPs, USD/Solaris, HDA management
-- [ ] **Phase 6**: Self-Generating UI (intent → interface synthesis)
+- [x] **Phase 4**: Render tools (viewport snapshot, Karma, flipbook)
+- [x] **Phase 5**: PDG/TOPs, USD/Solaris/LOPs, HDA management
+- [ ] **Phase 6**: MCP Apps (interactive UI in Claude)
+- [ ] **Phase 7**: Self-Generating UI (intent → interface synthesis)
 
 ## License
 

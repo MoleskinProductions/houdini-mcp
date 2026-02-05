@@ -13,8 +13,11 @@ import sys
 import os
 
 # Add the houdini-mcp directory to Python path
-# Adjust this path to where you installed the package
-MCP_PATH = os.path.expanduser("~/houdini-mcp")  # or wherever you cloned it
+# Uses HOUDINI_MCP_PATH env var if set, otherwise resolves relative to this file
+MCP_PATH = os.environ.get(
+    "HOUDINI_MCP_PATH",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if MCP_PATH not in sys.path:
     sys.path.insert(0, MCP_PATH)
 

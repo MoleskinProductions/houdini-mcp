@@ -45,9 +45,9 @@ apps = [
 houdini-mcp = "houdini_mcp.server:run"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/houdini-mcp"
-Documentation = "https://github.com/yourusername/houdini-mcp#readme"
-Repository = "https://github.com/yourusername/houdini-mcp"
+Homepage = "https://github.com/MoleskinProductions/houdini-mcp"
+Documentation = "https://github.com/MoleskinProductions/houdini-mcp#readme"
+Repository = "https://github.com/MoleskinProductions/houdini-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["houdini_mcp", "houdini_bridge"]
