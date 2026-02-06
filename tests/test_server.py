@@ -5,9 +5,11 @@ These tests can be run without Houdini to verify MCP server structure.
 For full integration tests, run with Houdini bridge active.
 """
 
-import pytest
 import json
 from unittest.mock import AsyncMock, patch
+
+import pytest
+
 
 # Test MCP server tool definitions
 class TestToolDefinitions:
@@ -18,7 +20,7 @@ class TestToolDefinitions:
         from houdini_mcp.server import TOOLS
 
         for tool in TOOLS:
-            assert tool.name, f"Tool missing name"
+            assert tool.name, "Tool missing name"
             assert tool.description, f"Tool {tool.name} missing description"
             assert tool.inputSchema, f"Tool {tool.name} missing inputSchema"
 
@@ -50,8 +52,9 @@ class TestBridgeCommunication:
     @pytest.mark.asyncio
     async def test_call_bridge_formats_get_request(self):
         """GET requests should use query parameters."""
-        from houdini_mcp.server import call_bridge
         from unittest.mock import MagicMock
+
+        from houdini_mcp.server import call_bridge
 
         with patch('houdini_mcp.server.httpx.AsyncClient') as mock_client:
             mock_response = MagicMock()
@@ -72,8 +75,9 @@ class TestBridgeCommunication:
     @pytest.mark.asyncio
     async def test_call_bridge_formats_post_request(self):
         """POST requests should use JSON body."""
-        from houdini_mcp.server import call_bridge
         from unittest.mock import MagicMock
+
+        from houdini_mcp.server import call_bridge
 
         with patch('houdini_mcp.server.httpx.AsyncClient') as mock_client:
             mock_response = MagicMock()

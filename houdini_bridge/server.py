@@ -25,15 +25,16 @@ from __future__ import annotations
 import json
 import threading
 import traceback
+from collections.abc import Callable
 from functools import wraps
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Callable, Optional
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 # Houdini module - only available when running inside Houdini
 try:
-    import hou
     import hdefereval
+    import hou
     IN_HOUDINI = True
 except ImportError:
     IN_HOUDINI = False
@@ -54,21 +55,21 @@ def require_main_thread(func: Callable) -> Callable:
 class HoudiniBridgeHandler(BaseHTTPRequestHandler):
     """
     HTTP request handler for the Houdini bridge.
-    
+
     All hou.* calls are executed on Houdini's main thread via hdefereval
     to avoid threading issues with Houdini's single-threaded UI.
     """
-    
+
     # Timeout for Houdini operations (seconds)
     TIMEOUT = 30.0
-    
-    def do_GET(self):
+
+    def do_GET(self):  # noqa: N802
         """Handle GET requests (read-only operations)."""
         parsed = urlparse(self.path)
         route = parsed.path
-        params = {k: v[0] if len(v) == 1 else v 
+        params = {k: v[0] if len(v) == 1 else v
                   for k, v in parse_qs(parsed.query).items()}
-        
+
         routes = {
             '/ping': self.handle_ping,
             '/scene/info': self.handle_scene_info,
@@ -90,7 +91,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             # HDA
             '/hda/get': self.handle_hda_get,
         }
-        
+
         handler = routes.get(route)
         if handler:
             try:
@@ -99,8 +100,8 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 self.send_error_json(500, f"Internal error: {str(e)}\n{traceback.format_exc()}")
         else:
             self.send_error_json(404, f"Unknown route: {route}")
-    
-    def do_POST(self):
+
+    def do_POST(self):  # noqa: N802
         """Handle POST requests (mutations)."""
         try:
             content_length = int(self.headers.get('Content-Length', 0))
@@ -108,10 +109,10 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as e:
             self.send_error_json(400, f"Invalid JSON: {str(e)}")
             return
-        
+
         parsed = urlparse(self.path)
         route = parsed.path
-        
+
         routes = {
             '/node/create': self.handle_node_create,
             '/node/delete': self.handle_node_delete,
@@ -140,7 +141,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             '/hda/install': self.handle_hda_install,
             '/hda/reload': self.handle_hda_reload,
         }
-        
+
         handler = routes.get(route)
         if handler:
             try:
@@ -149,19 +150,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 self.send_error_json(500, f"Internal error: {str(e)}\n{traceback.format_exc()}")
         else:
             self.send_error_json(404, f"Unknown route: {route}")
-    
-    def do_OPTIONS(self):
+
+    def do_OPTIONS(self):  # noqa: N802
         """Handle CORS preflight requests."""
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
-    
+
     # =========================================================================
     # GET Handlers (Read Operations)
     # =========================================================================
-    
+
     def handle_ping(self, params: dict):
         """Health check and version info."""
         @require_main_thread
@@ -174,9 +175,9 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 'license': hou.licenseCategory().name(),
                 'is_apprentice': hou.isApprentice(),
             }
-        
+
         self.send_json(get_info())
-    
+
     def handle_scene_info(self, params: dict):
         """Get comprehensive scene information."""
         @require_main_thread
@@ -202,35 +203,35 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             }
 
         self.send_json(get_info())
-    
+
     def handle_node_get(self, params: dict):
         """Get detailed info about a specific node."""
         path = params.get('path')
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def get_node():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             return self._serialize_node(node, include_parms=True)
-        
+
         self.send_json(get_node())
-    
+
     def handle_node_tree(self, params: dict):
         """Get hierarchical node tree from a root."""
         root = params.get('root', '/obj')
         depth = int(params.get('depth', 2))
-        
+
         @require_main_thread
         def get_tree():
             root_node = hou.node(root)
             if not root_node:
                 return {'error': f'Root node not found: {root}'}
-            
+
             def traverse(node, current_depth):
                 data = {
                     'path': node.path(),
@@ -238,74 +239,74 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'type': node.type().name(),
                     'type_label': node.type().description(),
                 }
-                
+
                 if current_depth < depth and hasattr(node, 'children'):
                     children = node.children()
                     if children:
                         data['children'] = [
-                            traverse(child, current_depth + 1) 
+                            traverse(child, current_depth + 1)
                             for child in children
                         ]
-                
+
                 return data
-            
+
             return traverse(root_node, 0)
-        
+
         self.send_json(get_tree())
-    
+
     def handle_node_search(self, params: dict):
         """Search for nodes by name or type."""
         pattern = params.get('pattern', '*')
         node_type = params.get('type')
         root = params.get('root', '/')
-        
+
         @require_main_thread
         def search():
             root_node = hou.node(root)
             if not root_node:
                 return {'error': f'Root not found: {root}'}
-            
+
             results = []
             for node in root_node.allSubChildren():
                 name_match = pattern == '*' or pattern.lower() in node.name().lower()
                 type_match = not node_type or node.type().name() == node_type
-                
+
                 if name_match and type_match:
                     results.append({
                         'path': node.path(),
                         'name': node.name(),
                         'type': node.type().name(),
                     })
-            
+
             return {'results': results, 'count': len(results)}
-        
+
         self.send_json(search())
-    
+
     def handle_parm_get(self, params: dict):
         """Get parameter value(s) from a node."""
         path = params.get('path')
         parm_name = params.get('parm')
-        
+
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def get_parms():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             if parm_name:
                 # Single parameter
                 parm = node.parm(parm_name)
                 if parm:
                     return self._serialize_parm(parm)
-                
+
                 parm_tuple = node.parmTuple(parm_name)
                 if parm_tuple:
                     return self._serialize_parm_tuple(parm_tuple)
-                
+
                 return {'error': f'Parameter not found: {parm_name}'}
             else:
                 # All parameters (non-default only for brevity)
@@ -313,35 +314,35 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 for parm in node.parms():
                     if not parm.isAtDefault():
                         parms.append(self._serialize_parm(parm))
-                
+
                 return {
                     'node': path,
                     'parm_count': len(node.parms()),
                     'modified_parms': parms,
                 }
-        
+
         self.send_json(get_parms())
-    
+
     def handle_parm_template(self, params: dict):
         """Get full parameter template (schema) for a node."""
         path = params.get('path')
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def get_template():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             def serialize_template(tmpl):
                 data = {
                     'name': tmpl.name(),
                     'label': tmpl.label(),
                     'type': tmpl.type().name(),
                 }
-                
+
                 if hasattr(tmpl, 'defaultValue'):
                     data['default'] = tmpl.defaultValue()
                 if hasattr(tmpl, 'minValue'):
@@ -350,17 +351,17 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     data['max'] = tmpl.maxValue()
                 if hasattr(tmpl, 'menuItems'):
                     data['menu'] = list(tmpl.menuItems())
-                
+
                 return data
-            
+
             templates = []
             for tmpl in node.parmTemplateGroup().entries():
                 templates.append(serialize_template(tmpl))
-            
+
             return {'node': path, 'templates': templates}
-        
+
         self.send_json(get_template())
-    
+
     def handle_cook_status(self, params: dict):
         """Get current cook/simulation status."""
         @require_main_thread
@@ -371,13 +372,13 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 'current_time': hou.time(),
                 'memory_usage_mb': self._get_memory_mb(),
             }
-        
+
         self.send_json(get_status())
-    
+
     def handle_hda_list(self, params: dict):
         """List available HDA definitions."""
         category = params.get('category')
-        
+
         @require_main_thread
         def list_hdas():
             hdas = []
@@ -393,30 +394,30 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'file': definition,
                     })
             return {'hdas': hdas, 'count': len(hdas)}
-        
+
         self.send_json(list_hdas())
-    
+
     # =========================================================================
     # POST Handlers (Mutations)
     # =========================================================================
-    
+
     def handle_node_create(self, body: dict):
         """Create a new node."""
         parent_path = body.get('parent', '/obj')
         node_type = body.get('type')
         name = body.get('name')
         position = body.get('position')
-        
+
         if not node_type:
             self.send_error_json(400, "Missing 'type' parameter")
             return
-        
+
         @require_main_thread
         def create():
             parent = hou.node(parent_path)
             if not parent:
                 return {'error': f'Parent not found: {parent_path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Create Node"):
                     node = parent.createNode(node_type, node_name=name)
@@ -424,7 +425,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         node.setPosition(hou.Vector2(position))
                     else:
                         parent.layoutChildren()
-                    
+
                     return {
                         'success': True,
                         'path': node.path(),
@@ -433,46 +434,46 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
             except hou.OperationFailed as e:
                 return {'error': str(e)}
-        
+
         self.send_json(create())
-    
+
     def handle_node_delete(self, body: dict):
         """Delete a node."""
         path = body.get('path')
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def delete():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Delete Node"):
                     node.destroy()
                     return {'success': True, 'deleted': path}
             except hou.OperationFailed as e:
                 return {'error': str(e)}
-        
+
         self.send_json(delete())
-    
+
     def handle_node_rename(self, body: dict):
         """Rename a node."""
         path = body.get('path')
         new_name = body.get('name')
-        
+
         if not path or not new_name:
             self.send_error_json(400, "Missing 'path' or 'name' parameter")
             return
-        
+
         @require_main_thread
         def rename():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Rename Node"):
                     node.setName(new_name)
@@ -484,30 +485,30 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
             except hou.OperationFailed as e:
                 return {'error': str(e)}
-        
+
         self.send_json(rename())
-    
+
     def handle_node_connect(self, body: dict):
         """Connect two nodes."""
         from_path = body.get('from')
         to_path = body.get('to')
         from_output = body.get('from_output', 0)
         to_input = body.get('to_input', 0)
-        
+
         if not from_path or not to_path:
             self.send_error_json(400, "Missing 'from' or 'to' parameter")
             return
-        
+
         @require_main_thread
         def connect():
             from_node = hou.node(from_path)
             to_node = hou.node(to_path)
-            
+
             if not from_node:
                 return {'error': f'Source node not found: {from_path}'}
             if not to_node:
                 return {'error': f'Destination node not found: {to_path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Connect Nodes"):
                     to_node.setInput(to_input, from_node, from_output)
@@ -520,49 +521,49 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
             except hou.OperationFailed as e:
                 return {'error': str(e)}
-        
+
         self.send_json(connect())
-    
+
     def handle_node_disconnect(self, body: dict):
         """Disconnect a node input."""
         path = body.get('path')
         input_index = body.get('input', 0)
-        
+
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def disconnect():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Disconnect Node"):
                     node.setInput(input_index, None)
                     return {'success': True, 'path': path, 'input': input_index}
             except hou.OperationFailed as e:
                 return {'error': str(e)}
-        
+
         self.send_json(disconnect())
-    
+
     def handle_node_flag(self, body: dict):
         """Set node flags (display, render, bypass, etc.)."""
         path = body.get('path')
         flag = body.get('flag')
         value = body.get('value', True)
-        
+
         if not path or not flag:
             self.send_error_json(400, "Missing 'path' or 'flag' parameter")
             return
-        
+
         @require_main_thread
         def set_flag():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             try:
                 with hou.undos.group("MCP: Set Flag"):
                     if flag == 'display':
@@ -577,53 +578,53 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         node.setSelectableInViewport(value)
                     else:
                         return {'error': f'Unknown flag: {flag}'}
-                    
+
                     return {'success': True, 'path': path, 'flag': flag, 'value': value}
             except (hou.OperationFailed, AttributeError) as e:
                 return {'error': str(e)}
-        
+
         self.send_json(set_flag())
-    
+
     def handle_node_layout(self, body: dict):
         """Auto-layout children of a node."""
         path = body.get('path', '/obj')
-        
+
         @require_main_thread
         def layout():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             try:
                 node.layoutChildren()
                 return {'success': True, 'path': path}
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(layout())
-    
+
     def handle_parm_set(self, body: dict):
         """Set parameter value."""
         path = body.get('path')
         parm_name = body.get('parm')
         value = body.get('value')
-        
+
         if not path or not parm_name or value is None:
             self.send_error_json(400, "Missing 'path', 'parm', or 'value' parameter")
             return
-        
+
         @require_main_thread
         def set_parm():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             parm = node.parm(parm_name)
             parm_tuple = node.parmTuple(parm_name) if not parm else None
-            
+
             if not parm and not parm_tuple:
                 return {'error': f'Parameter not found: {parm_name}'}
-            
+
             try:
                 with hou.undos.group("MCP: Set Parameter"):
                     if parm:
@@ -634,7 +635,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             'value': parm.eval(),
                         }
                     else:
-                        if isinstance(value, (list, tuple)):
+                        if isinstance(value, list | tuple):
                             parm_tuple.set(value)
                         else:
                             return {'error': f'{parm_name} is a tuple, expected list/tuple'}
@@ -645,28 +646,28 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(set_parm())
-    
+
     def handle_parm_revert(self, body: dict):
         """Revert parameter to default value."""
         path = body.get('path')
         parm_name = body.get('parm')
-        
+
         if not path or not parm_name:
             self.send_error_json(400, "Missing 'path' or 'parm' parameter")
             return
-        
+
         @require_main_thread
         def revert():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             parm = node.parm(parm_name)
             if not parm:
                 return {'error': f'Parameter not found: {parm_name}'}
-            
+
             try:
                 with hou.undos.group("MCP: Revert Parameter"):
                     parm.revertToDefaults()
@@ -677,33 +678,33 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(revert())
-    
+
     def handle_parm_expression(self, body: dict):
         """Set parameter expression."""
         path = body.get('path')
         parm_name = body.get('parm')
         expression = body.get('expression')
         language = body.get('language', 'hscript')
-        
+
         if not all([path, parm_name, expression]):
             self.send_error_json(400, "Missing required parameters")
             return
-        
+
         @require_main_thread
         def set_expr():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             parm = node.parm(parm_name)
             if not parm:
                 return {'error': f'Parameter not found: {parm_name}'}
-            
+
             try:
                 with hou.undos.group("MCP: Set Expression"):
-                    lang = (hou.exprLanguage.Hscript if language == 'hscript' 
+                    lang = (hou.exprLanguage.Hscript if language == 'hscript'
                             else hou.exprLanguage.Python)
                     parm.setExpression(expression, lang)
                     return {
@@ -715,13 +716,13 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
             except Exception as e:
                 return {'error': f'Invalid expression: {str(e)}'}
-        
+
         self.send_json(set_expr())
-    
+
     def handle_scene_save(self, body: dict):
         """Save the current scene."""
         path = body.get('path')  # Optional, saves to current if not specified
-        
+
         @require_main_thread
         def save():
             try:
@@ -735,16 +736,16 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(save())
-    
+
     def handle_frame_set(self, body: dict):
         """Set current frame."""
         frame = body.get('frame')
         if frame is None:
             self.send_error_json(400, "Missing 'frame' parameter")
             return
-        
+
         @require_main_thread
         def set_frame():
             try:
@@ -752,36 +753,36 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 return {'success': True, 'frame': hou.frame()}
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(set_frame())
-    
+
     def handle_geo_export(self, body: dict):
         """Export geometry from a SOP node."""
         path = body.get('path')
         format = body.get('format', 'obj')
         output = body.get('output')
-        
+
         if not path:
             self.send_error_json(400, "Missing 'path' parameter")
             return
-        
+
         @require_main_thread
         def export():
             node = hou.node(path)
             if not node:
                 return {'error': f'Node not found: {path}'}
-            
+
             if not hasattr(node, 'geometry'):
                 return {'error': 'Node does not have geometry output'}
-            
+
             geo = node.geometry()
             if geo is None:
                 return {'error': 'Node has no cooked geometry'}
-            
+
             # Generate output path
             if not output:
-                import tempfile
                 import os
+                import tempfile
                 ext_map = {
                     'obj': '.obj',
                     'gltf': '.gltf',
@@ -795,17 +796,17 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 out_path = os.path.join(tempfile.gettempdir(), f'houdini_export{ext}')
             else:
                 out_path = output
-            
+
             try:
                 geo.saveToFile(out_path)
-                
+
                 # Gather stats
                 stats = {
                     'points': geo.intrinsicValue('pointcount'),
                     'prims': geo.intrinsicValue('primitivecount'),
                     'vertices': geo.intrinsicValue('vertexcount'),
                 }
-                
+
                 bbox = geo.boundingBox()
                 stats['bounds'] = {
                     'min': list(bbox.minvec()),
@@ -813,7 +814,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'center': list(bbox.center()),
                     'size': list(bbox.sizevec()),
                 }
-                
+
                 return {
                     'success': True,
                     'output': out_path,
@@ -822,33 +823,32 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         self.send_json(export())
-    
+
     def handle_render_snapshot(self, body: dict):
         """Render a snapshot from viewport or Karma."""
         render_type = body.get('type', 'viewport')  # 'viewport' or 'karma'
         output = body.get('output')
         resolution = body.get('resolution', [1920, 1080])
-        camera = body.get('camera')  # optional camera path
         lop_node = body.get('lop_node')  # for karma, which LOP to render
-        
+
         @require_main_thread
         def render():
-            import tempfile
             import os
-            
+            import tempfile
+
             # Generate output path if not specified
             if not output:
                 out_path = os.path.join(tempfile.gettempdir(), 'houdini_snapshot.png')
             else:
                 out_path = output
-            
+
             if render_type == 'viewport':
                 # Capture from scene viewer
                 desktop = hou.ui.curDesktop()
                 scene_viewer = None
-                
+
                 # Find a scene viewer
                 for pane in desktop.panes():
                     for tab in pane.tabs():
@@ -857,23 +857,23 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             break
                     if scene_viewer:
                         break
-                
+
                 if not scene_viewer:
                     return {'error': 'No scene viewer found'}
-                
+
                 try:
                     # Get the viewport
                     viewport = scene_viewer.curViewport()
-                    
+
                     # Create flipbook settings for single frame capture
                     settings = scene_viewer.flipbookSettings()
                     settings.output(out_path)
                     settings.frameRange((hou.frame(), hou.frame()))
                     settings.resolution(resolution)
-                    
+
                     # Capture
                     scene_viewer.flipbook(viewport, settings)
-                    
+
                     return {
                         'success': True,
                         'output': out_path,
@@ -883,25 +883,26 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     }
                 except Exception as e:
                     return {'error': f'Viewport capture failed: {str(e)}'}
-            
+
             elif render_type == 'karma':
                 # Render via Karma
-                if not lop_node:
+                karma_node = lop_node
+                if not karma_node:
                     # Try to find a karma node in /stage
                     stage = hou.node('/stage')
                     if stage:
                         for child in stage.children():
                             if 'karma' in child.type().name().lower():
-                                lop_node = child.path()
+                                karma_node = child.path()
                                 break
-                
-                if not lop_node:
+
+                if not karma_node:
                     return {'error': 'No LOP node specified and no Karma node found in /stage'}
-                
-                node = hou.node(lop_node)
+
+                node = hou.node(karma_node)
                 if not node:
-                    return {'error': f'LOP node not found: {lop_node}'}
-                
+                    return {'error': f'LOP node not found: {karma_node}'}
+
                 try:
                     # Check if it's a USD Render ROP or similar
                     if hasattr(node, 'render'):
@@ -912,53 +913,53 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             node.parm('resolutionx').set(resolution[0])
                         if node.parm('resolutiony'):
                             node.parm('resolutiony').set(resolution[1])
-                        
+
                         # Render single frame
                         node.render()
-                        
+
                         return {
                             'success': True,
                             'output': out_path,
                             'type': 'karma',
-                            'node': lop_node,
+                            'node': karma_node,
                             'frame': hou.frame(),
                             'resolution': resolution,
                         }
                     else:
-                        return {'error': f'Node {lop_node} does not support rendering'}
+                        return {'error': f'Node {karma_node} does not support rendering'}
                 except Exception as e:
                     return {'error': f'Karma render failed: {str(e)}'}
-            
+
             else:
                 return {'error': f'Unknown render type: {render_type}'}
-        
+
         self.send_json(render())
-    
+
     def handle_render_flipbook(self, body: dict):
         """Render a flipbook (frame sequence) from viewport."""
         output = body.get('output')  # Should include $F or frame pattern
         frame_range = body.get('frame_range')  # [start, end]
         resolution = body.get('resolution', [1920, 1080])
-        
+
         if not frame_range:
             self.send_error_json(400, "Missing 'frame_range' parameter")
             return
-        
+
         @require_main_thread
         def flipbook():
-            import tempfile
             import os
-            
+            import tempfile
+
             # Generate output path if not specified
             if not output:
                 out_dir = tempfile.mkdtemp(prefix='houdini_flipbook_')
                 out_path = os.path.join(out_dir, 'frame_$F4.png')
             else:
                 out_path = output
-            
+
             desktop = hou.ui.curDesktop()
             scene_viewer = None
-            
+
             for pane in desktop.panes():
                 for tab in pane.tabs():
                     if tab.type() == hou.paneTabType.SceneViewer:
@@ -966,19 +967,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         break
                 if scene_viewer:
                     break
-            
+
             if not scene_viewer:
                 return {'error': 'No scene viewer found'}
-            
+
             try:
                 viewport = scene_viewer.curViewport()
                 settings = scene_viewer.flipbookSettings()
                 settings.output(out_path)
                 settings.frameRange((frame_range[0], frame_range[1]))
                 settings.resolution(resolution)
-                
+
                 scene_viewer.flipbook(viewport, settings)
-                
+
                 return {
                     'success': True,
                     'output': out_path,
@@ -987,26 +988,26 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 }
             except Exception as e:
                 return {'error': f'Flipbook failed: {str(e)}'}
-        
+
         self.send_json(flipbook())
-    
+
     def handle_batch(self, body: dict):
         """Execute multiple operations atomically."""
         operations = body.get('operations', [])
-        
+
         if not operations:
             self.send_error_json(400, "No operations provided")
             return
-        
+
         @require_main_thread
         def execute_batch():
             results = []
-            
+
             with hou.undos.group("MCP: Batch Operation"):
                 for i, op in enumerate(operations):
                     op_type = op.get('type')
                     op_args = op.get('args', {})
-                    
+
                     try:
                         # Map operation types to internal handlers
                         if op_type == 'create':
@@ -1019,19 +1020,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             result = self._batch_set_flag(op_args)
                         else:
                             result = {'error': f'Unknown operation type: {op_type}'}
-                        
+
                         results.append({'index': i, 'type': op_type, 'result': result})
                     except Exception as e:
                         results.append({'index': i, 'type': op_type, 'error': str(e)})
-            
+
             return {'results': results, 'count': len(results)}
-        
+
         self.send_json(execute_batch())
-    
+
     # =========================================================================
     # Internal Helpers
     # =========================================================================
-    
+
     @staticmethod
     def _get_memory_mb() -> float:
         """Get current process memory usage in MB."""
@@ -1042,7 +1043,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         except Exception:
             return -1
 
-    def _serialize_node(self, node: 'hou.Node', include_parms: bool = False) -> dict:
+    def _serialize_node(self, node: hou.Node, include_parms: bool = False) -> dict:
         """Serialize a node to a dictionary."""
         data = {
             'path': node.path(),
@@ -1061,10 +1062,10 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 {'name': c.name(), 'path': c.path()}
                 for c in node.outputs()
             ],
-            'errors': [e.text() for e in node.errors()] if hasattr(node, 'errors') else [],
-            'warnings': [w.text() for w in node.warnings()] if hasattr(node, 'warnings') else [],
+            'errors': [e if isinstance(e, str) else e.text() for e in node.errors()] if hasattr(node, 'errors') else [],
+            'warnings': [w if isinstance(w, str) else w.text() for w in node.warnings()] if hasattr(node, 'warnings') else [],
         }
-        
+
         # Flags (if applicable)
         flags = {}
         if hasattr(node, 'isDisplayFlagSet'):
@@ -1076,15 +1077,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         if hasattr(node, 'isTemplateFlagSet'):
             flags['template'] = node.isTemplateFlagSet()
         data['flags'] = flags
-        
+
         if include_parms:
             data['parms'] = [
                 self._serialize_parm(p) for p in node.parms() if not p.isAtDefault()
             ]
-        
+
         return data
-    
-    def _serialize_parm(self, parm: 'hou.Parm') -> dict:
+
+    def _serialize_parm(self, parm: hou.Parm) -> dict:
         """Serialize a parameter to a dictionary."""
         tmpl = parm.parmTemplate()
         data = {
@@ -1092,20 +1093,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             'label': tmpl.label(),
             'type': tmpl.type().name(),
             'value': parm.eval(),
-            'is_expression': parm.isExpression(),
             'is_at_default': parm.isAtDefault(),
         }
-        
-        if parm.isExpression():
-            try:
-                data['expression'] = parm.expression()
-                data['expression_language'] = parm.expressionLanguage().name()
-            except:
-                pass
-        
+
+        try:
+            data['expression'] = parm.expression()
+            data['expression_language'] = parm.expressionLanguage().name()
+            data['is_expression'] = True
+        except hou.OperationFailed:
+            data['is_expression'] = False
+
         return data
-    
-    def _serialize_parm_tuple(self, parm_tuple: 'hou.ParmTuple') -> dict:
+
+    def _serialize_parm_tuple(self, parm_tuple: hou.ParmTuple) -> dict:
         """Serialize a parameter tuple to a dictionary."""
         tmpl = parm_tuple.parmTemplate()
         return {
@@ -1115,7 +1115,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             'size': len(parm_tuple),
             'value': list(parm_tuple.eval()),
         }
-    
+
     def _serialize_workitem(self, wi) -> dict:
         """Serialize a PDG work item to a dictionary."""
         state_raw = str(wi.state)
@@ -1167,7 +1167,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
         # Kind
         try:
-            from pxr import Kind, Usd
+            from pxr import Usd
             model = Usd.ModelAPI(prim)
             data['kind'] = model.GetKind()
         except Exception:
@@ -1284,7 +1284,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         if args.get('position'):
             node.setPosition(hou.Vector2(args['position']))
         return {'path': node.path(), 'name': node.name()}
-    
+
     def _batch_connect(self, args: dict) -> dict:
         """Internal connect for batch operations."""
         from_node = hou.node(args['from'])
@@ -1293,7 +1293,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             return {'error': 'Node not found'}
         to_node.setInput(args.get('to_input', 0), from_node, args.get('from_output', 0))
         return {'success': True}
-    
+
     def _batch_set_parm(self, args: dict) -> dict:
         """Internal set_parm for batch operations."""
         node = hou.node(args['path'])
@@ -1304,7 +1304,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             return {'error': 'Parameter not found'}
         parm.set(args['value'])
         return {'value': parm.eval()}
-    
+
     def _batch_set_flag(self, args: dict) -> dict:
         """Internal set_flag for batch operations."""
         node = hou.node(args['path'])
@@ -1319,7 +1319,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         elif flag == 'bypass':
             node.bypass(value)
         return {'success': True}
-    
+
     # =========================================================================
     # PDG/TOPs Handlers
     # =========================================================================
@@ -1772,8 +1772,8 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
                     kind = ''
                     try:
-                        from pxr import UsdGeom
-                        model = pxr.Usd.ModelAPI(prim)
+                        from pxr import Usd
+                        model = Usd.ModelAPI(prim)
                         kind = model.GetKind()
                     except Exception:
                         pass
@@ -1986,7 +1986,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
     # =========================================================================
     # Response Helpers
     # =========================================================================
-    
+
     def send_json(self, data: Any):
         """Send JSON response."""
         self.send_response(200)
@@ -1994,7 +1994,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(data, default=str).encode('utf-8'))
-    
+
     def send_error_json(self, code: int, message: str):
         """Send JSON error response."""
         self.send_response(code)
@@ -2002,7 +2002,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps({'error': message}).encode('utf-8'))
-    
+
     def log_message(self, format: str, *args):
         """Suppress default logging, use Houdini console instead."""
         if IN_HOUDINI:
@@ -2013,51 +2013,55 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 # Server Management
 # =============================================================================
 
-_server_instance: Optional[HTTPServer] = None
-_server_thread: Optional[threading.Thread] = None
+_server_instance: HTTPServer | None = None
+_server_thread: threading.Thread | None = None
+_server_lock = threading.Lock()
 
 
 def start_bridge(port: int = 8765, host: str = '127.0.0.1') -> HTTPServer:
     """
     Start the Houdini bridge server.
-    
+
     Args:
         port: Port to listen on (default: 8765)
         host: Host to bind to (default: 127.0.0.1 for localhost only)
-    
+
     Returns:
         HTTPServer instance
     """
     global _server_instance, _server_thread
-    
-    if _server_instance is not None:
-        print(f"[HoudiniBridge] Server already running on port {port}")
-        return _server_instance
-    
-    _server_instance = HTTPServer((host, port), HoudiniBridgeHandler)
-    _server_thread = threading.Thread(target=_server_instance.serve_forever, daemon=True)
-    _server_thread.start()
-    
+
+    with _server_lock:
+        if _server_instance is not None:
+            print(f"[HoudiniBridge] Server already running on port {port}")
+            return _server_instance
+
+        _server_instance = HTTPServer((host, port), HoudiniBridgeHandler)
+        _server_thread = threading.Thread(target=_server_instance.serve_forever, daemon=True)
+        _server_thread.start()
+
     print(f"[HoudiniBridge] Server started on http://{host}:{port}")
-    print(f"[HoudiniBridge] Endpoints: /ping, /scene/info, /node/get, /node/tree, ...")
-    
+    print("[HoudiniBridge] Endpoints: /ping, /scene/info, /node/get, /node/tree, ...")
+
     return _server_instance
 
 
 def stop_bridge():
     """Stop the bridge server."""
     global _server_instance, _server_thread
-    
-    if _server_instance is not None:
-        _server_instance.shutdown()
-        _server_instance = None
-        _server_thread = None
-        print("[HoudiniBridge] Server stopped")
+
+    with _server_lock:
+        if _server_instance is not None:
+            _server_instance.shutdown()
+            _server_instance = None
+            _server_thread = None
+            print("[HoudiniBridge] Server stopped")
 
 
 def is_running() -> bool:
     """Check if the bridge server is running."""
-    return _server_instance is not None
+    with _server_lock:
+        return _server_instance is not None
 
 
 # =============================================================================

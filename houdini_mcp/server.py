@@ -24,17 +24,23 @@ import asyncio
 import json
 import logging
 import os
-import sys
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from mcp.server import Server
 from mcp.types import (
+    AudioContent,
     CallToolResult,
+    EmbeddedResource,
+    ImageContent,
     ListToolsResult,
+    ResourceLink,
     TextContent,
     Tool,
 )
+
+# MCP content union type used by CallToolResult
+ContentItem = TextContent | ImageContent | AudioContent | ResourceLink | EmbeddedResource
 
 # Configure logging
 logging.basicConfig(
@@ -58,32 +64,32 @@ server = Server("houdini-mcp")
 async def call_bridge(
     method: str,
     endpoint: str,
-    params: Optional[dict] = None,
-    body: Optional[dict] = None
-) -> dict:
+    params: dict | None = None,
+    body: dict | None = None
+) -> Any:
     """
     Make a request to the Houdini bridge.
-    
+
     Args:
         method: HTTP method (GET or POST)
         endpoint: API endpoint (e.g., '/scene/info')
         params: Query parameters for GET requests
         body: JSON body for POST requests
-    
+
     Returns:
         Response data as dictionary
-    
+
     Raises:
         Exception: If the request fails
     """
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         url = f"{HOUDINI_BRIDGE_URL}{endpoint}"
-        
+
         if method == 'GET':
             response = await client.get(url, params=params)
         else:
             response = await client.post(url, json=body)
-        
+
         response.raise_for_status()
         return response.json()
 
@@ -93,7 +99,7 @@ def format_result(data: Any) -> str:
     return json.dumps(data, indent=2, default=str)
 
 
-def error_result(message: str) -> list[TextContent]:
+def error_result(message: str) -> list[ContentItem]:
     """Create an error result."""
     return [TextContent(type="text", text=f"ERROR: {message}")]
 
@@ -215,7 +221,7 @@ TOOLS = [
             }
         }
     ),
-    
+
     # --- Write Operations ---
     Tool(
         name="houdini_node_create",
@@ -860,7 +866,7 @@ async def list_tools() -> ListToolsResult:
 async def call_tool(name: str, arguments: dict) -> CallToolResult:
     """Execute a Houdini tool."""
     logger.info(f"Calling tool: {name} with args: {arguments}")
-    
+
     try:
         # Map tool names to bridge endpoints
         tool_map = {
@@ -883,7 +889,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             }),
             'houdini_cook_status': ('GET', '/cook/status', None),
             'houdini_hda_list': ('GET', '/hda/list', {'category': arguments.get('category')}),
-            
+
             # POST requests
             'houdini_node_create': ('POST', '/node/create', arguments),
             'houdini_node_delete': ('POST', '/node/delete', arguments),
@@ -936,31 +942,31 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             'houdini_hda_install': ('POST', '/hda/install', arguments),
             'houdini_hda_reload': ('POST', '/hda/reload', arguments),
         }
-        
+
         if name not in tool_map:
             return CallToolResult(content=error_result(f"Unknown tool: {name}"))
-        
+
         method, endpoint, data = tool_map[name]
-        
+
         if method == 'GET':
             # Filter out None values from params
             params = {k: v for k, v in (data or {}).items() if v is not None}
             result = await call_bridge('GET', endpoint, params=params or None)
         else:
             result = await call_bridge('POST', endpoint, body=data)
-        
+
         # Check for errors in response
         if isinstance(result, dict) and 'error' in result:
             return CallToolResult(content=[TextContent(
                 type="text",
                 text=f"Houdini error: {result['error']}"
             )])
-        
+
         return CallToolResult(content=[TextContent(
             type="text",
             text=format_result(result)
         )])
-    
+
     except httpx.ConnectError:
         return CallToolResult(content=error_result(
             "Cannot connect to Houdini. Make sure:\n"
@@ -968,17 +974,17 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             "2. The bridge server is started (run start_bridge() in Houdini)\n"
             f"3. Bridge is accessible at {HOUDINI_BRIDGE_URL}"
         ))
-    
+
     except httpx.TimeoutException:
         return CallToolResult(content=error_result(
             f"Request timed out after {TIMEOUT}s. The operation may be taking too long."
         ))
-    
+
     except httpx.HTTPStatusError as e:
         return CallToolResult(content=error_result(
             f"HTTP error {e.response.status_code}: {e.response.text}"
         ))
-    
+
     except Exception as e:
         logger.exception(f"Error calling tool {name}")
         return CallToolResult(content=error_result(str(e)))
@@ -991,9 +997,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 async def main():
     """Run the MCP server."""
     from mcp.server.stdio import stdio_server
-    
+
     logger.info(f"Starting Houdini MCP server (bridge: {HOUDINI_BRIDGE_URL})")
-    
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

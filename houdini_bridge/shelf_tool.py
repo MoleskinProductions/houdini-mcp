@@ -9,8 +9,8 @@ To install:
 The tool toggles the MCP bridge server on/off.
 """
 
-import sys
 import os
+import sys
 
 # Add the houdini-mcp directory to Python path
 # Uses HOUDINI_MCP_PATH env var if set, otherwise resolves relative to this file
@@ -22,12 +22,13 @@ if MCP_PATH not in sys.path:
     sys.path.insert(0, MCP_PATH)
 
 # Import and toggle
-from houdini_bridge import toggle_bridge, is_running
+from houdini_bridge import is_running, toggle_bridge  # noqa: E402
 
 toggle_bridge()
 
 # Show status message
-import hou
+import hou  # noqa: E402
+
 if is_running():
     hou.ui.displayMessage(
         "MCP Bridge started on http://127.0.0.1:8765\n\n"
