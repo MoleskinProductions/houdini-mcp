@@ -317,6 +317,312 @@ class TestBatchAndRender:
             assert 'flip' in result.content[0].text
 
 
+# =============================================================================
+# VGGT Tool tests
+# =============================================================================
+
+class TestVGGTToolDefinitions:
+    """Test that VGGT tool definitions are properly structured."""
+
+    def test_vggt_tools_exist(self):
+        """All 5 VGGT tools should be defined."""
+        from houdini_mcp.server import TOOLS
+
+        vggt_names = {t.name for t in TOOLS if 'vggt' in t.name}
+        expected = {
+            'houdini_vggt_setup',
+            'houdini_vggt_create_node',
+            'houdini_vggt_execute',
+            'houdini_vggt_pipeline_status',
+            'houdini_vggt_read_results',
+        }
+        assert vggt_names == expected
+
+    def test_vggt_create_node_has_module_enum(self):
+        """houdini_vggt_create_node should have module enum with all 7 modules."""
+        from houdini_mcp.server import TOOLS
+
+        tool = next(t for t in TOOLS if t.name == 'houdini_vggt_create_node')
+        module_prop = tool.inputSchema['properties']['module']
+        assert 'enum' in module_prop
+        assert len(module_prop['enum']) == 7
+        assert 'Reconstruct' in module_prop['enum']
+        assert 'Dataset Export' in module_prop['enum']
+
+    def test_vggt_execute_has_timeout(self):
+        """houdini_vggt_execute should have a timeout parameter."""
+        from houdini_mcp.server import TOOLS
+
+        tool = next(t for t in TOOLS if t.name == 'houdini_vggt_execute')
+        assert 'timeout' in tool.inputSchema['properties']
+
+    def test_vggt_read_results_has_include(self):
+        """houdini_vggt_read_results should have an include parameter."""
+        from houdini_mcp.server import TOOLS
+
+        tool = next(t for t in TOOLS if t.name == 'houdini_vggt_read_results')
+        assert 'include' in tool.inputSchema['properties']
+
+
+class TestVGGTSetup:
+    """Test houdini_vggt_setup handler."""
+
+    @pytest.mark.asyncio
+    async def test_setup_missing_vggt_root(self):
+        """Should error when VGGT_ROOT is not set."""
+        from houdini_mcp.server import call_tool
+
+        with patch.dict('os.environ', {}, clear=True):
+            # Remove VGGT_ROOT if present
+            import os
+            env = os.environ.copy()
+            env.pop('VGGT_ROOT', None)
+            with patch.dict('os.environ', env, clear=True):
+                result = await call_tool('houdini_vggt_setup', {})
+                assert 'ERROR' in result.content[0].text or 'VGGT_ROOT' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_setup_installs_hdas(self, tmp_path):
+        """Should install all HDA files found in the hda directory."""
+        from houdini_mcp.server import call_tool
+
+        # Create fake HDA files
+        hda_dir = tmp_path / 'hda'
+        hda_dir.mkdir()
+        for name in ['VGGT_Reconstruct.hda', 'VGGT_Depth_Fields.hda',
+                      'VGGT_Mesher.hda', 'VGGT_Tracker.hda',
+                      'VGGT_Texture_Project.hda', 'VGGT_COLMAP_Export.hda',
+                      'VGGT_Dataset_Export.hda']:
+            (hda_dir / name).touch()
+
+        mock_install = AsyncMock(return_value={'success': True, 'definitions': [{'name': 'test'}]})
+
+        with patch.dict('os.environ', {'VGGT_ROOT': str(tmp_path)}):
+            with patch('houdini_mcp.server.call_bridge', mock_install):
+                result = await call_tool('houdini_vggt_setup', {})
+                text = result.content[0].text
+                parsed = json.loads(text)
+                assert parsed['installed'] == 7
+                assert len(parsed['errors']) == 0
+
+
+class TestVGGTCreateNode:
+    """Test houdini_vggt_create_node handler."""
+
+    @pytest.mark.asyncio
+    async def test_create_sop_node(self):
+        """SOP modules should create a geo container + VGGT node inside."""
+        from houdini_mcp.server import call_tool
+
+        call_count = 0
+
+        async def mock_bridge(method, endpoint, params=None, body=None):
+            nonlocal call_count
+            call_count += 1
+            if endpoint == '/node/create' and body.get('type') == 'geo':
+                return {'success': True, 'path': '/obj/vggt_reconstruct', 'name': 'vggt_reconstruct', 'type': 'geo'}
+            elif endpoint == '/node/create':
+                return {'success': True, 'path': '/obj/vggt_reconstruct/VGGT_Reconstruct1', 'name': 'VGGT_Reconstruct1', 'type': 'vggt::VGGT_Reconstruct::1.0'}
+            elif endpoint == '/node/flag':
+                return {'success': True}
+            return {'success': True}
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge):
+            result = await call_tool('houdini_vggt_create_node', {'module': 'Reconstruct'})
+            text = result.content[0].text
+            parsed = json.loads(text)
+            assert parsed['success'] is True
+            assert 'Reconstruct' in parsed['node_path'] or 'vggt' in parsed['node_path']
+            assert parsed['category'] == 'Sop'
+
+    @pytest.mark.asyncio
+    async def test_create_driver_node(self):
+        """Driver modules should be created directly in /out."""
+        from houdini_mcp.server import call_tool
+
+        async def mock_bridge(method, endpoint, params=None, body=None):
+            if endpoint == '/node/create':
+                return {'success': True, 'path': '/out/VGGT_COLMAP_Export1', 'name': 'VGGT_COLMAP_Export1', 'type': 'vggt::VGGT_COLMAP_Export::1.0'}
+            return {'success': True}
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge):
+            result = await call_tool('houdini_vggt_create_node', {'module': 'COLMAP Export'})
+            parsed = json.loads(result.content[0].text)
+            assert parsed['success'] is True
+            assert parsed['category'] == 'Driver'
+
+    @pytest.mark.asyncio
+    async def test_create_unknown_module(self):
+        """Unknown module should return error."""
+        from houdini_mcp.server import call_tool
+
+        result = await call_tool('houdini_vggt_create_node', {'module': 'NotAModule'})
+        assert 'ERROR' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_create_with_parms(self):
+        """Should set initial parameters after creation."""
+        from houdini_mcp.server import call_tool
+
+        parm_calls = []
+
+        async def mock_bridge(method, endpoint, params=None, body=None):
+            if endpoint == '/node/create' and body.get('type') == 'geo':
+                return {'success': True, 'path': '/obj/vggt_reconstruct', 'name': 'vggt_reconstruct', 'type': 'geo'}
+            elif endpoint == '/node/create':
+                return {'success': True, 'path': '/obj/vggt_reconstruct/VGGT_Reconstruct1', 'name': 'VGGT_Reconstruct1', 'type': 'vggt::VGGT_Reconstruct::1.0'}
+            elif endpoint == '/parm/set':
+                parm_calls.append(body)
+                return {'success': True}
+            elif endpoint == '/node/flag':
+                return {'success': True}
+            return {'success': True}
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge):
+            result = await call_tool('houdini_vggt_create_node', {
+                'module': 'Reconstruct',
+                'parms': {'image_dir': '/tmp/images', 'resize_long_edge': 512},
+            })
+            assert len(parm_calls) == 2
+
+
+class TestVGGTExecute:
+    """Test houdini_vggt_execute handler."""
+
+    @pytest.mark.asyncio
+    async def test_execute_success(self):
+        """Should POST to /vggt/execute and return result."""
+        from unittest.mock import MagicMock
+
+        from houdini_mcp.server import call_tool
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'success': True, 'path': '/obj/geo1/recon1',
+            'result': {'status': 'ok', 'stats': {'num_cameras': 10}}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch('houdini_mcp.server.httpx.AsyncClient', return_value=mock_client):
+            result = await call_tool('houdini_vggt_execute', {
+                'path': '/obj/geo1/recon1',
+                'timeout': 120,
+            })
+            text = result.content[0].text
+            assert 'num_cameras' in text
+
+    @pytest.mark.asyncio
+    async def test_execute_missing_path(self):
+        """Should error when path is missing."""
+        from houdini_mcp.server import call_tool
+
+        result = await call_tool('houdini_vggt_execute', {})
+        assert 'ERROR' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_execute_timeout_capped(self):
+        """Timeout should be capped at 3600."""
+        from unittest.mock import MagicMock
+
+        from houdini_mcp.server import call_tool
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'success': True, 'path': '/obj/geo1/r'}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+
+        with patch('houdini_mcp.server.httpx.AsyncClient', return_value=mock_client) as mock_cls:
+            result = await call_tool('houdini_vggt_execute', {
+                'path': '/obj/geo1/r', 'timeout': 9999
+            })
+            # Verify timeout was capped to 3600
+            mock_cls.assert_called_with(timeout=3600.0)
+
+
+class TestVGGTPipelineStatus:
+    """Test houdini_vggt_pipeline_status handler."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_status(self):
+        """Should GET /vggt/pipeline and return node list."""
+        from houdini_mcp.server import call_tool
+        mock_data = {
+            'nodes': [
+                {'path': '/obj/geo1/recon1', 'type': 'vggt::VGGT_Reconstruct::1.0', 'status': 'done'},
+            ],
+            'count': 1,
+        }
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/vggt/pipeline', mock_data)):
+            result = await call_tool('houdini_vggt_pipeline_status', {})
+            text = result.content[0].text
+            assert 'recon1' in text
+            assert 'done' in text
+
+    @pytest.mark.asyncio
+    async def test_pipeline_status_with_filter(self):
+        """Should pass path filter to bridge."""
+        from houdini_mcp.server import call_tool
+
+        async def mock_bridge_fn(method, endpoint, params=None, body=None):
+            assert method == 'GET'
+            assert endpoint == '/vggt/pipeline'
+            assert params and params.get('path') == '/obj/geo1/recon1'
+            return {'nodes': [], 'count': 0}
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge_fn):
+            result = await call_tool('houdini_vggt_pipeline_status', {'path': '/obj/geo1/recon1'})
+            parsed = json.loads(result.content[0].text)
+            assert parsed['count'] == 0
+
+
+class TestVGGTReadResults:
+    """Test houdini_vggt_read_results handler."""
+
+    @pytest.mark.asyncio
+    async def test_read_results(self):
+        """Should GET /vggt/results with include params."""
+        from houdini_mcp.server import call_tool
+        mock_data = {
+            'path': '/obj/geo1/recon1',
+            'result_dir': '/tmp/cache/recon1',
+            'result': {'status': 'ok', 'stats': {'num_cameras': 10}},
+            'cameras': {'cameras': [{'image': '001.png'}]},
+            'files': [{'name': 'result.json', 'size': 256}],
+        }
+
+        async def mock_bridge_fn(method, endpoint, params=None, body=None):
+            assert method == 'GET'
+            assert endpoint == '/vggt/results'
+            assert params['path'] == '/obj/geo1/recon1'
+            return mock_data
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge_fn):
+            result = await call_tool('houdini_vggt_read_results', {
+                'path': '/obj/geo1/recon1',
+                'include': ['result', 'cameras'],
+            })
+            text = result.content[0].text
+            assert 'num_cameras' in text
+            assert '001.png' in text
+
+    @pytest.mark.asyncio
+    async def test_read_results_missing_path(self):
+        """Should error when path is missing."""
+        from houdini_mcp.server import call_tool
+
+        result = await call_tool('houdini_vggt_read_results', {})
+        assert 'ERROR' in result.content[0].text
+
+
 # Integration tests (require running Houdini bridge)
 @pytest.mark.integration
 class TestIntegration:

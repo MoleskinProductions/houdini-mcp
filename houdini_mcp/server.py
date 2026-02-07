@@ -765,6 +765,127 @@ TOOLS = [
         }
     ),
 
+    # --- VGGT Pipeline Operations ---
+    Tool(
+        name="houdini_vggt_setup",
+        description=(
+            "Install all VGGT Toolkit HDAs into the current Houdini session and verify environment health. "
+            "Call this once at the start of a session before using any other VGGT tools. "
+            "Installs 7 HDAs: Reconstruct, Depth Fields, Mesher, Tracker, Texture Project, COLMAP Export, Dataset Export."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        }
+    ),
+    Tool(
+        name="houdini_vggt_create_node",
+        description=(
+            "Create a VGGT pipeline node with the correct container and initial parameters. "
+            "SOP modules (Reconstruct, Depth Fields, Mesher, Tracker, Texture Project) are created inside a geo container at /obj. "
+            "Driver modules (COLMAP Export, Dataset Export) are created at /out. "
+            "Optionally set initial parameters and connect to an upstream node."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "module": {
+                    "type": "string",
+                    "enum": [
+                        "Reconstruct", "Depth Fields", "Mesher",
+                        "Tracker", "Texture Project",
+                        "COLMAP Export", "Dataset Export"
+                    ],
+                    "description": "Which VGGT module to create"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional name for the node (auto-generated if not provided)"
+                },
+                "parms": {
+                    "type": "object",
+                    "description": "Optional parameter values to set, e.g. {\"image_dir\": \"/path/to/images\"}"
+                },
+                "connect_to": {
+                    "type": "string",
+                    "description": "Optional node path to connect as input 0 (for SOP modules that accept input)"
+                }
+            },
+            "required": ["module"]
+        }
+    ),
+    Tool(
+        name="houdini_vggt_execute",
+        description=(
+            "Trigger the Execute callback on a VGGT node, running GPU inference. "
+            "This is equivalent to pressing the Execute button on the HDA. "
+            "For Reconstruct, this runs camera solving and point cloud generation. "
+            "For Depth Fields, this extracts depth maps. For Tracker, this tracks points. "
+            "Returns the result.json contents and node status when complete. "
+            "WARNING: This can take 1-10+ minutes depending on image count and GPU."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Full path to the VGGT node, e.g. '/obj/vggt_reconstruct/VGGT_Reconstruct1'"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 600, max: 3600)",
+                    "default": 600
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_vggt_pipeline_status",
+        description=(
+            "Get the status of all VGGT nodes in the current scene. "
+            "Returns each node's path, type, execution status (ready/running/done/error/stale), "
+            "key parameter values, connections, and whether results exist. "
+            "Optionally filter to a specific node path."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific node path"
+                }
+            }
+        }
+    ),
+    Tool(
+        name="houdini_vggt_read_results",
+        description=(
+            "Read output artifacts from a completed VGGT node. "
+            "Returns contents of result.json, cameras.json, log.txt, manifest.json, and/or progress.json "
+            "from the node's result directory. Also lists all files in the result directory."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Full path to the VGGT node"
+                },
+                "include": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["result", "cameras", "log", "manifest", "progress"]
+                    },
+                    "description": "Which artifacts to include (default: all)",
+                    "default": ["result", "cameras", "log", "manifest", "progress"]
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+
     # --- HDA Management Operations ---
     Tool(
         name="houdini_hda_get",
@@ -853,6 +974,251 @@ TOOLS = [
 
 
 # =============================================================================
+# VGGT Custom Handlers
+# =============================================================================
+
+# Module name → (type_name, category)
+_VGGT_MODULES = {
+    'Reconstruct': ('vggt::VGGT_Reconstruct::1.0', 'Sop'),
+    'Depth Fields': ('vggt::VGGT_Depth_Fields::1.0', 'Sop'),
+    'Mesher': ('vggt::VGGT_Mesher::1.0', 'Sop'),
+    'Tracker': ('vggt::VGGT_Tracker::1.0', 'Sop'),
+    'Texture Project': ('vggt::VGGT_Texture_Project::1.0', 'Sop'),
+    'COLMAP Export': ('vggt::VGGT_COLMAP_Export::1.0', 'Driver'),
+    'Dataset Export': ('vggt::VGGT_Dataset_Export::1.0', 'Driver'),
+}
+
+_VGGT_HDA_FILES = [
+    'VGGT_Reconstruct.hda',
+    'VGGT_Depth_Fields.hda',
+    'VGGT_Mesher.hda',
+    'VGGT_Tracker.hda',
+    'VGGT_Texture_Project.hda',
+    'VGGT_COLMAP_Export.hda',
+    'VGGT_Dataset_Export.hda',
+]
+
+
+async def handle_vggt_setup(arguments: dict) -> list[ContentItem]:
+    """Install all VGGT HDAs and check environment health."""
+    vggt_root = os.environ.get('VGGT_ROOT')
+    if not vggt_root:
+        return error_result("VGGT_ROOT environment variable not set on MCP server")
+
+    hda_dir = os.path.join(vggt_root, 'hda')
+    if not os.path.isdir(hda_dir):
+        return error_result(f"HDA directory not found: {hda_dir}")
+
+    results = []
+    errors = []
+
+    for hda_file in _VGGT_HDA_FILES:
+        hda_path = os.path.join(hda_dir, hda_file)
+        if not os.path.exists(hda_path):
+            errors.append(f"Missing: {hda_file}")
+            continue
+
+        try:
+            result = await call_bridge('POST', '/hda/install', body={'file_path': hda_path})
+            if isinstance(result, dict) and 'error' in result:
+                errors.append(f"{hda_file}: {result['error']}")
+            else:
+                results.append({
+                    'file': hda_file,
+                    'definitions': result.get('definitions', []),
+                })
+        except Exception as e:
+            errors.append(f"{hda_file}: {str(e)}")
+
+    summary = {
+        'installed': len(results),
+        'errors': errors,
+        'hda_dir': hda_dir,
+        'hdas': results,
+    }
+
+    return [TextContent(type="text", text=format_result(summary))]
+
+
+async def handle_vggt_create_node(arguments: dict) -> list[ContentItem]:
+    """Create a VGGT node with correct container and initial parameters."""
+    module = arguments.get('module')
+    name = arguments.get('name')
+    parms = arguments.get('parms', {})
+    connect_to = arguments.get('connect_to')
+
+    if module not in _VGGT_MODULES:
+        return error_result(
+            f"Unknown module: {module}. "
+            f"Valid modules: {', '.join(_VGGT_MODULES.keys())}"
+        )
+
+    type_name, category = _VGGT_MODULES[module]
+
+    try:
+        if category == 'Sop':
+            # SOPs need a geo container at /obj
+            container_name = name or module.lower().replace(' ', '_')
+            geo_result = await call_bridge('POST', '/node/create', body={
+                'parent': '/obj',
+                'type': 'geo',
+                'name': f'vggt_{container_name}',
+            })
+            if isinstance(geo_result, dict) and 'error' in geo_result:
+                return error_result(f"Failed to create geo container: {geo_result['error']}")
+
+            geo_path = geo_result['path']
+
+            # Create the VGGT SOP inside the geo
+            sop_result = await call_bridge('POST', '/node/create', body={
+                'parent': geo_path,
+                'type': type_name,
+                'name': name,
+            })
+            if isinstance(sop_result, dict) and 'error' in sop_result:
+                return error_result(f"Failed to create VGGT node: {sop_result['error']}")
+
+            node_path = sop_result['path']
+
+            # Set display flag
+            await call_bridge('POST', '/node/flag', body={
+                'path': node_path,
+                'flag': 'display',
+                'value': True,
+            })
+
+        else:
+            # Drivers go in /out
+            sop_result = await call_bridge('POST', '/node/create', body={
+                'parent': '/out',
+                'type': type_name,
+                'name': name,
+            })
+            if isinstance(sop_result, dict) and 'error' in sop_result:
+                return error_result(f"Failed to create VGGT node: {sop_result['error']}")
+
+            node_path = sop_result['path']
+            geo_path = None
+
+        # Set initial parameters
+        for parm_name, value in parms.items():
+            await call_bridge('POST', '/parm/set', body={
+                'path': node_path,
+                'parm': parm_name,
+                'value': value,
+            })
+
+        # Connect input if specified
+        if connect_to and category == 'Sop':
+            await call_bridge('POST', '/node/connect', body={
+                'from': connect_to,
+                'to': node_path,
+                'from_output': 0,
+                'to_input': 0,
+            })
+
+        result = {
+            'success': True,
+            'module': module,
+            'node_path': node_path,
+            'type': type_name,
+            'category': category,
+        }
+        if geo_path:
+            result['container_path'] = geo_path
+
+        return [TextContent(type="text", text=format_result(result))]
+
+    except Exception as e:
+        return error_result(f"Failed to create node: {str(e)}")
+
+
+async def handle_vggt_execute(arguments: dict) -> list[ContentItem]:
+    """Trigger on_execute on a VGGT node (GPU inference)."""
+    path = arguments.get('path')
+    timeout = min(arguments.get('timeout', 600), 3600)
+
+    if not path:
+        return error_result("Missing 'path' argument")
+
+    try:
+        # Use a custom long timeout for this call
+        async with httpx.AsyncClient(timeout=float(timeout)) as client:
+            url = f"{HOUDINI_BRIDGE_URL}/vggt/execute"
+            response = await client.post(url, json={'path': path})
+            response.raise_for_status()
+            result = response.json()
+
+        if isinstance(result, dict) and 'error' in result:
+            return error_result(f"Execute failed: {result['error']}")
+
+        return [TextContent(type="text", text=format_result(result))]
+
+    except httpx.TimeoutException:
+        return error_result(
+            f"Execute timed out after {timeout}s. "
+            "The job may still be running. Use houdini_vggt_pipeline_status to check."
+        )
+    except Exception as e:
+        return error_result(f"Execute failed: {str(e)}")
+
+
+async def handle_vggt_pipeline_status(arguments: dict) -> list[ContentItem]:
+    """Get status of all VGGT nodes in the scene."""
+    path = arguments.get('path')
+
+    try:
+        params = {}
+        if path:
+            params['path'] = path
+
+        result = await call_bridge('GET', '/vggt/pipeline', params=params or None)
+
+        if isinstance(result, dict) and 'error' in result:
+            return error_result(result['error'])
+
+        return [TextContent(type="text", text=format_result(result))]
+
+    except Exception as e:
+        return error_result(f"Pipeline status failed: {str(e)}")
+
+
+async def handle_vggt_read_results(arguments: dict) -> list[ContentItem]:
+    """Read artifacts from a completed VGGT node."""
+    path = arguments.get('path')
+    include = arguments.get('include', ['result', 'cameras', 'log', 'manifest', 'progress'])
+
+    if not path:
+        return error_result("Missing 'path' argument")
+
+    try:
+        params = {
+            'path': path,
+            'include': ','.join(include) if isinstance(include, list) else include,
+        }
+
+        result = await call_bridge('GET', '/vggt/results', params=params)
+
+        if isinstance(result, dict) and 'error' in result:
+            return error_result(result['error'])
+
+        return [TextContent(type="text", text=format_result(result))]
+
+    except Exception as e:
+        return error_result(f"Read results failed: {str(e)}")
+
+
+# Custom handler dispatch table
+_VGGT_HANDLERS = {
+    'houdini_vggt_setup': handle_vggt_setup,
+    'houdini_vggt_create_node': handle_vggt_create_node,
+    'houdini_vggt_execute': handle_vggt_execute,
+    'houdini_vggt_pipeline_status': handle_vggt_pipeline_status,
+    'houdini_vggt_read_results': handle_vggt_read_results,
+}
+
+
+# =============================================================================
 # MCP Handlers
 # =============================================================================
 
@@ -868,6 +1234,11 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
     logger.info(f"Calling tool: {name} with args: {arguments}")
 
     try:
+        # Check for VGGT custom handlers first
+        if name in _VGGT_HANDLERS:
+            result = await _VGGT_HANDLERS[name](arguments)
+            return CallToolResult(content=result)
+
         # Map tool names to bridge endpoints
         tool_map = {
             # GET requests

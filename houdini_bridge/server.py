@@ -90,6 +90,9 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             '/lop/prim/search': self.handle_lop_prim_search,
             # HDA
             '/hda/get': self.handle_hda_get,
+            # VGGT
+            '/vggt/pipeline': self.handle_vggt_pipeline,
+            '/vggt/results': self.handle_vggt_results,
         }
 
         handler = routes.get(route)
@@ -140,6 +143,8 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             '/hda/create': self.handle_hda_create,
             '/hda/install': self.handle_hda_install,
             '/hda/reload': self.handle_hda_reload,
+            # VGGT
+            '/vggt/execute': self.handle_vggt_execute,
         }
 
         handler = routes.get(route)
@@ -1982,6 +1987,237 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 return {'error': f'Failed to reload HDA: {str(e)}'}
 
         self.send_json(reload())
+
+    # =========================================================================
+    # VGGT Pipeline Handlers
+    # =========================================================================
+
+    def handle_vggt_execute(self, body: dict):
+        """Invoke on_execute callback on a VGGT HDA node."""
+        path = body.get('path')
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        @require_main_thread
+        def execute():
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            type_name = node.type().name()
+            if 'VGGT' not in type_name:
+                return {'error': f'Node {path} is not a VGGT node (type: {type_name})'}
+
+            # Call the HDA's on_execute via its PythonModule
+            try:
+                hm = node.hm()
+                if not hasattr(hm, 'on_execute'):
+                    return {'error': f'Node {path} has no on_execute callback'}
+
+                hm.on_execute({"node": node})
+
+                # Read result.json if available
+                result_dir_parm = node.parm("_result_dir")
+                result_data = {}
+                if result_dir_parm:
+                    result_dir = result_dir_parm.evalAsString()
+                    if result_dir:
+                        import os
+                        result_path = os.path.join(result_dir, "result.json")
+                        if os.path.exists(result_path):
+                            with open(result_path, 'r') as f:
+                                result_data = json.load(f)
+
+                return {
+                    'success': True,
+                    'path': path,
+                    'type': type_name,
+                    'color': list(node.color().rgb()),
+                    'comment': node.comment(),
+                    'result': result_data,
+                }
+            except Exception as e:
+                return {'error': f'Execute failed: {str(e)}\n{traceback.format_exc()}'}
+
+        self.send_json(execute())
+
+    def handle_vggt_pipeline(self, params: dict):
+        """Scan scene for all VGGT nodes and return their status."""
+        filter_path = params.get('path')
+
+        @require_main_thread
+        def scan():
+            nodes = []
+
+            # Search all contexts for VGGT nodes
+            for root_path in ['/obj', '/out']:
+                root = hou.node(root_path)
+                if not root:
+                    continue
+                for node in root.allSubChildren():
+                    type_name = node.type().name()
+                    if 'VGGT' not in type_name:
+                        continue
+                    if filter_path and node.path() != filter_path:
+                        continue
+
+                    node_info = {
+                        'path': node.path(),
+                        'name': node.name(),
+                        'type': type_name,
+                        'category': node.type().category().name(),
+                        'color': list(node.color().rgb()),
+                        'comment': node.comment(),
+                    }
+
+                    # Determine status from color
+                    rgb = tuple(round(c, 1) for c in node.color().rgb())
+                    color_status_map = {
+                        (0.3, 0.8, 0.3): 'done',
+                        (1.0, 0.8, 0.0): 'running',
+                        (0.9, 0.2, 0.2): 'error',
+                        (0.9, 0.7, 0.2): 'stale',
+                        (0.6, 0.6, 0.6): 'ready',
+                    }
+                    node_info['status'] = color_status_map.get(rgb, 'unknown')
+
+                    # Result directory
+                    result_dir_parm = node.parm("_result_dir")
+                    if result_dir_parm:
+                        result_dir = result_dir_parm.evalAsString()
+                        node_info['result_dir'] = result_dir
+                        node_info['has_results'] = bool(result_dir)
+                    else:
+                        node_info['result_dir'] = ''
+                        node_info['has_results'] = False
+
+                    # Stale state
+                    hash_parm = node.parm("_last_parm_hash")
+                    if hash_parm:
+                        node_info['last_parm_hash'] = hash_parm.evalAsString()
+                    else:
+                        node_info['last_parm_hash'] = ''
+
+                    node_info['is_stale'] = 'STALE' in node.comment()
+
+                    # Key parameter values
+                    key_parms = {}
+                    for parm_name in ['image_dir', 'confidence_percentile',
+                                      'resize_long_edge', 'voxel_size',
+                                      'output_mode', 'blend_mode',
+                                      'texture_resolution', 'output_dir',
+                                      'smooth_iterations', 'visibility_threshold']:
+                        parm = node.parm(parm_name)
+                        if parm is not None:
+                            try:
+                                key_parms[parm_name] = parm.eval()
+                            except Exception:
+                                key_parms[parm_name] = parm.evalAsString()
+                    node_info['parms'] = key_parms
+
+                    # Connections
+                    node_info['inputs'] = [
+                        {'name': c.name(), 'path': c.path()} if c else None
+                        for c in node.inputs()
+                    ]
+                    node_info['outputs'] = [
+                        {'name': c.name(), 'path': c.path()}
+                        for c in node.outputs()
+                    ]
+
+                    nodes.append(node_info)
+
+            return {'nodes': nodes, 'count': len(nodes)}
+
+        self.send_json(scan())
+
+    def handle_vggt_results(self, params: dict):
+        """Read result artifacts from a VGGT node's result directory."""
+        path = params.get('path')
+        include = params.get('include', 'result,cameras,log,manifest,progress')
+
+        if not path:
+            self.send_error_json(400, "Missing 'path' parameter")
+            return
+
+        # Parse include list
+        if isinstance(include, str):
+            include_set = {s.strip() for s in include.split(',')}
+        else:
+            include_set = set(include)
+
+        @require_main_thread
+        def read_results():
+            import os
+
+            node = hou.node(path)
+            if not node:
+                return {'error': f'Node not found: {path}'}
+
+            result_dir_parm = node.parm("_result_dir")
+            if not result_dir_parm:
+                return {'error': f'Node {path} has no _result_dir parameter'}
+
+            result_dir = result_dir_parm.evalAsString()
+            if not result_dir or not os.path.isdir(result_dir):
+                return {'error': f'No result directory found (node may not have been executed yet)'}
+
+            artifacts = {'path': path, 'result_dir': result_dir}
+
+            # Map include keys to filenames
+            file_map = {
+                'result': 'result.json',
+                'cameras': 'cameras.json',
+                'log': 'log.txt',
+                'manifest': 'manifest.json',
+                'progress': 'progress.json',
+            }
+
+            for key, filename in file_map.items():
+                if key not in include_set:
+                    continue
+
+                file_path = os.path.join(result_dir, filename)
+                if not os.path.exists(file_path):
+                    artifacts[key] = None
+                    continue
+
+                try:
+                    with open(file_path, 'r') as f:
+                        if filename.endswith('.json'):
+                            artifacts[key] = json.load(f)
+                        else:
+                            # For text files, limit to last 200 lines
+                            content = f.read()
+                            lines = content.splitlines()
+                            if len(lines) > 200:
+                                artifacts[key] = '\n'.join(
+                                    [f'... ({len(lines) - 200} lines truncated) ...']
+                                    + lines[-200:]
+                                )
+                            else:
+                                artifacts[key] = content
+                except Exception as e:
+                    artifacts[key] = {'error': f'Failed to read {filename}: {str(e)}'}
+
+            # List all files in result dir for reference
+            try:
+                all_files = []
+                for f in os.listdir(result_dir):
+                    fpath = os.path.join(result_dir, f)
+                    if os.path.isfile(fpath):
+                        all_files.append({
+                            'name': f,
+                            'size': os.path.getsize(fpath),
+                        })
+                artifacts['files'] = all_files
+            except Exception:
+                artifacts['files'] = []
+
+            return artifacts
+
+        self.send_json(read_results())
 
     # =========================================================================
     # Response Helpers
