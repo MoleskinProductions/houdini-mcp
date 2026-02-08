@@ -737,6 +737,153 @@ class TestVGGTReadResults:
         assert 'ERROR' in result.content[0].text
 
 
+# =============================================================================
+# Read-only tool tests (mock-based)
+# =============================================================================
+
+class TestReadTools:
+    """Test read-only MCP tool endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_ping(self):
+        """houdini_ping should GET /ping."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'status': 'ok', 'houdini_version': '21.0.506', 'hip_file': 'untitled.hip'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/ping', mock_data)):
+            result = await call_tool('houdini_ping', {})
+            assert 'ok' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_scene_info(self):
+        """houdini_scene_info should GET /scene/info."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'hip_file': '/tmp/test.hip', 'fps': 24.0, 'contexts': ['obj', 'stage']}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/scene/info', mock_data)):
+            result = await call_tool('houdini_scene_info', {})
+            assert 'test.hip' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_get(self):
+        """houdini_node_get should GET /node/get."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'path': '/obj/geo1', 'type': 'geo', 'name': 'geo1', 'children': []}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/node/get', mock_data)):
+            result = await call_tool('houdini_node_get', {'path': '/obj/geo1'})
+            assert 'geo1' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_tree(self):
+        """houdini_node_tree should GET /node/tree."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'path': '/obj', 'children': [{'path': '/obj/geo1', 'type': 'geo'}]}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/node/tree', mock_data)):
+            result = await call_tool('houdini_node_tree', {'root': '/obj', 'depth': 2})
+            assert '/obj' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_search(self):
+        """houdini_node_search should GET /node/search."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'matches': ['/obj/geo1/scatter1', '/obj/geo1/scatter2']}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/node/search', mock_data)):
+            result = await call_tool('houdini_node_search', {'pattern': 'scatter*', 'root': '/obj'})
+            assert 'scatter1' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_parm_get(self):
+        """houdini_parm_get should GET /parm/get."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'path': '/obj/geo1', 'parm': 'tx', 'value': 5.0}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/parm/get', mock_data)):
+            result = await call_tool('houdini_parm_get', {'path': '/obj/geo1', 'parm': 'tx'})
+            assert '5.0' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_parm_template(self):
+        """houdini_parm_template should GET /parm/template."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'path': '/obj/geo1', 'templates': [{'name': 'tx', 'type': 'Float', 'default': 0.0}]}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/parm/template', mock_data)):
+            result = await call_tool('houdini_parm_template', {'path': '/obj/geo1'})
+            assert 'tx' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_cook_status(self):
+        """houdini_cook_status should GET /cook/status."""
+        from houdini_mcp.server import call_tool
+        mock_data = {
+            'state': 'idle', 'progress': None, 'current_node': None,
+            'elapsed_seconds': None, 'memory_bytes': 524288000,
+            'errors': [], 'warnings': [],
+        }
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/cook/status', mock_data)):
+            result = await call_tool('houdini_cook_status', {})
+            assert 'idle' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_hda_list(self):
+        """houdini_hda_list should GET /hda/list."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'hdas': [{'name': 'my_hda', 'label': 'My HDA'}]}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('GET', '/hda/list', mock_data)):
+            result = await call_tool('houdini_hda_list', {})
+            assert 'my_hda' in result.content[0].text
+
+
+class TestAdditionalMutationTools:
+    """Test remaining untested mutation tools."""
+
+    @pytest.mark.asyncio
+    async def test_node_rename(self):
+        """houdini_node_rename should POST /node/rename."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'old_name': 'scatter1', 'new_name': 'scatter_points'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/rename', mock_data)):
+            result = await call_tool('houdini_node_rename', {
+                'path': '/obj/geo1/scatter1', 'new_name': 'scatter_points'
+            })
+            assert 'scatter_points' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_disconnect(self):
+        """houdini_node_disconnect should POST /node/disconnect."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'path': '/obj/geo1/scatter1', 'input': 0}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/disconnect', mock_data)):
+            result = await call_tool('houdini_node_disconnect', {
+                'path': '/obj/geo1/scatter1', 'input': 0
+            })
+            assert 'success' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_layout(self):
+        """houdini_node_layout should POST /node/layout."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'path': '/obj/geo1', 'nodes_laid_out': 5}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/layout', mock_data)):
+            result = await call_tool('houdini_node_layout', {'path': '/obj/geo1'})
+            assert 'success' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_parm_expression(self):
+        """houdini_parm_expression should POST /parm/expression."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'parm': 'ty', 'expression': 'sin($T*360)', 'language': 'hscript'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/parm/expression', mock_data)):
+            result = await call_tool('houdini_parm_expression', {
+                'path': '/obj/geo1/xform', 'parm': 'ty',
+                'expression': 'sin($T*360)', 'language': 'hscript',
+            })
+            assert 'sin' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool(self):
+        """Unknown tool name should return error."""
+        from houdini_mcp.server import call_tool
+        result = await call_tool('houdini_nonexistent', {})
+        assert 'Unknown tool' in result.content[0].text
+
+
 # Integration tests (require running Houdini bridge)
 @pytest.mark.integration
 class TestIntegration:
