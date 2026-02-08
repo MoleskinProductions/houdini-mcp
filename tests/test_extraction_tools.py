@@ -244,6 +244,97 @@ class TestCameraGetTool:
             assert matrix[2][2] == 1 and matrix[3][3] == 1
 
 
+class TestContractErrorFormat:
+    """Test §4.4 contract error format roundtrip."""
+
+    @pytest.mark.asyncio
+    async def test_contract_error_detected(self):
+        """Contract error format {error: true, code, message} is surfaced."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'error': True,
+            'code': 'NODE_NOT_FOUND',
+            'message': 'No node at /obj/missing',
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/cook/status', mock_data)):
+            result = await call_tool('houdini_cook_status', {})
+            text = result.content[0].text
+            assert 'NODE_NOT_FOUND' in text
+            assert 'error' in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_legacy_error_still_detected(self):
+        """Legacy error format {error: 'msg'} is also handled."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {'error': 'Something went wrong'}
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/cook/status', mock_data)):
+            result = await call_tool('houdini_cook_status', {})
+            text = result.content[0].text
+            assert 'error' in text.lower()
+            assert 'Something went wrong' in text
+
+
+class TestCookStatusTool:
+    """Test houdini_cook_status MCP tool (§2.6 schema)."""
+
+    @pytest.mark.asyncio
+    async def test_cook_status_idle(self):
+        """Cook status idle response has all §2.6 fields."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'state': 'idle',
+            'progress': None,
+            'current_node': None,
+            'elapsed_seconds': 0.0,
+            'memory_bytes': 1073741824,
+            'errors': [],
+            'warnings': [],
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/cook/status', mock_data)):
+            result = await call_tool('houdini_cook_status', {})
+            text = result.content[0].text
+            import json
+            parsed = json.loads(text)
+            assert parsed['state'] == 'idle'
+            assert 'memory_bytes' in parsed
+            assert isinstance(parsed['errors'], list)
+            assert isinstance(parsed['warnings'], list)
+
+    @pytest.mark.asyncio
+    async def test_cook_status_with_errors(self):
+        """Cook status with errors should report error state."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'state': 'error',
+            'progress': None,
+            'current_node': None,
+            'elapsed_seconds': 5.2,
+            'memory_bytes': 2147483648,
+            'errors': ['/obj/geo1: Cook error on node'],
+            'warnings': ['/obj/geo1/mountain1: possible division by zero'],
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/cook/status', mock_data)):
+            result = await call_tool('houdini_cook_status', {})
+            text = result.content[0].text
+            import json
+            parsed = json.loads(text)
+            assert parsed['state'] == 'error'
+            assert len(parsed['errors']) == 1
+            assert len(parsed['warnings']) == 1
+
+
 class TestExtractionToolDefinitions:
     """Test that extraction tool definitions are properly registered."""
 

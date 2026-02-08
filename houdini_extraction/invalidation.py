@@ -125,6 +125,7 @@ def start_invalidation() -> None:
         hou.nodeEventType.ChildDeleted,
         hou.nodeEventType.ParmTupleChanged,
         hou.nodeEventType.InputRewired,
+        hou.nodeEventType.AppearanceChanged,
     )
 
     # Hip file events (save, load)
@@ -201,7 +202,8 @@ def _hip_event_callback(event_type: Any) -> None:
 def _node_event_callback(event_type: Any, **kwargs: Any) -> None:
     """Callback for node events on root networks.
 
-    Handles: ChildCreated, ChildDeleted, ParmTupleChanged, InputRewired.
+    Handles: ChildCreated, ChildDeleted, ParmTupleChanged, InputRewired,
+    AppearanceChanged (→ cook_complete).
     """
     try:
         event_name = str(event_type)
@@ -220,6 +222,10 @@ def _node_event_callback(event_type: Any, **kwargs: Any) -> None:
             _push_event('parm_changed', scope='node', path=f'{node_path}/{parm_name}')
         elif 'InputRewired' in event_name:
             _push_event('connection_changed', scope='node', path=node_path)
+        elif 'AppearanceChanged' in event_name:
+            # AppearanceChanged fires when a node finishes cooking
+            # (badge/color update). Used as proxy for cook_complete.
+            _push_event('cook_complete', scope='node', path=node_path)
     except Exception:
         pass
 

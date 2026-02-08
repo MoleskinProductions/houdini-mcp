@@ -259,7 +259,22 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'name': node.name(),
                     'type': node.type().name(),
                     'type_label': node.type().description(),
+                    'category': node.type().category().name(),
                 }
+
+                # Flags (§2.1)
+                flags = {}
+                if hasattr(node, 'isDisplayFlagSet'):
+                    flags['display'] = node.isDisplayFlagSet()
+                if hasattr(node, 'isRenderFlagSet'):
+                    flags['render'] = node.isRenderFlagSet()
+                if hasattr(node, 'isBypassed'):
+                    flags['bypass'] = node.isBypassed()
+                data['flags'] = flags
+
+                # Inputs/outputs as paths (§2.1)
+                data['inputs'] = [c.path() for c in node.inputs() if c is not None]
+                data['outputs'] = [c.path() for c in node.outputs()]
 
                 if current_depth < depth and hasattr(node, 'children'):
                     children = node.children()
@@ -1160,6 +1175,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             'color': list(node.color().rgb()),
             'position': list(node.position()),
             'comment': node.comment(),
+            'children': [c.path() for c in node.children()] if hasattr(node, 'children') else [],
             'inputs': [
                 {'name': c.name(), 'path': c.path()} if c else None
                 for c in node.inputs()
@@ -1194,10 +1210,25 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
     def _serialize_parm(self, parm: hou.Parm) -> dict:
         """Serialize a parameter to a dictionary."""
         tmpl = parm.parmTemplate()
+        type_name = tmpl.type().name()
+
+        # Ramp parameters (§2.2.1)
+        if type_name == 'Ramp':
+            return self._serialize_ramp_parm(parm, tmpl)
+
+        # Multiparm folders (§2.2.2)
+        if type_name == 'Folder':
+            try:
+                folder_type = tmpl.folderType().name()
+                if 'Multiparm' in folder_type or 'MultiparmBlock' in folder_type:
+                    return self._serialize_multiparm_parm(parm, tmpl)
+            except Exception:
+                pass
+
         data = {
             'name': parm.name(),
             'label': tmpl.label(),
-            'type': tmpl.type().name(),
+            'type': type_name,
             'value': parm.eval(),
             'is_at_default': parm.isAtDefault(),
         }
@@ -1210,6 +1241,73 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             data['is_expression'] = False
 
         return data
+
+    def _serialize_ramp_parm(self, parm: hou.Parm, tmpl) -> dict:
+        """Serialize a ramp parameter (§2.2.1)."""
+        ramp_interp_map = {
+            'Constant': 'constant', 'Linear': 'linear',
+            'CatmullRom': 'catmull-rom', 'MonotoneCubic': 'monotone-cubic',
+            'Bezier': 'bezier',
+        }
+        try:
+            ramp = parm.evalAsRamp() if hasattr(parm, 'evalAsRamp') else parm.eval()
+            is_color = ramp.isColor() if hasattr(ramp, 'isColor') else False
+            keys = []
+            for i in range(len(ramp.keys())):
+                basis_name = str(ramp.basis()[i])
+                basis_short = basis_name.rsplit('.', 1)[-1] if '.' in basis_name else basis_name
+                key_data: dict[str, Any] = {
+                    'pos': ramp.keys()[i],
+                    'interp': ramp_interp_map.get(basis_short, 'linear'),
+                }
+                if is_color:
+                    key_data['value'] = list(ramp.values()[i])
+                else:
+                    key_data['value'] = ramp.values()[i]
+                keys.append(key_data)
+            value: Any = {'ramp_type': 'color' if is_color else 'float', 'keys': keys}
+        except Exception:
+            value = {'ramp_type': 'float', 'keys': []}
+        return {
+            'name': parm.name(),
+            'label': tmpl.label(),
+            'type': 'ramp',
+            'value': value,
+            'is_at_default': parm.isAtDefault() if hasattr(parm, 'isAtDefault') else None,
+        }
+
+    def _serialize_multiparm_parm(self, parm: hou.Parm, tmpl) -> dict:
+        """Serialize a multiparm folder parameter (§2.2.2)."""
+        try:
+            count = int(parm.eval())
+            child_templates = tmpl.parmTemplates() if hasattr(tmpl, 'parmTemplates') else []
+            base_names = [t.name() for t in child_templates if hasattr(t, 'name')]
+            node = parm.node() if hasattr(parm, 'node') else None
+            instances: list[dict[str, Any]] = []
+            if node and base_names:
+                for i in range(1, count + 1):
+                    instance: dict[str, Any] = {}
+                    for base in base_names:
+                        inst_name = f'{base}{i}'
+                        inst_parm = node.parm(inst_name)
+                        if inst_parm is not None:
+                            instance[inst_name] = inst_parm.eval()
+                        else:
+                            inst_name_alt = f'{base}_{i}'
+                            inst_parm = node.parm(inst_name_alt)
+                            if inst_parm is not None:
+                                instance[inst_name_alt] = inst_parm.eval()
+                    instances.append(instance)
+            value: Any = {'count': count, 'instances': instances}
+        except Exception:
+            value = {'count': 0, 'instances': []}
+        return {
+            'name': parm.name(),
+            'label': tmpl.label(),
+            'type': 'multiparm',
+            'value': value,
+            'is_at_default': parm.isAtDefault() if hasattr(parm, 'isAtDefault') else None,
+        }
 
     def _serialize_parm_tuple(self, parm_tuple: hou.ParmTuple) -> dict:
         """Serialize a parameter tuple to a dictionary."""
@@ -2333,12 +2431,16 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, default=str).encode('utf-8'))
 
     def send_error_json(self, code: int, message: str):
-        """Send JSON error response."""
+        """Send JSON error response in §4.4 contract format."""
+        # Map HTTP status to contract error code
+        code_map = {400: 'INVALID_PARAMS', 404: 'NOT_FOUND', 500: 'INTERNAL_ERROR'}
+        error_code = code_map.get(code, 'UNKNOWN')
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
-        self.wfile.write(json.dumps({'error': message}).encode('utf-8'))
+        body = self._error_response(error_code, message)
+        self.wfile.write(json.dumps(body).encode('utf-8'))
 
     def log_message(self, format: str, *args):
         """Suppress default logging, use Houdini console instead."""

@@ -12,9 +12,6 @@ import tempfile
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # =============================================================================
 # Serializer tests
 # =============================================================================
@@ -266,7 +263,7 @@ class TestFileRef:
 
     def test_write_file_ref(self):
         from houdini_extraction.file_ref import write_file_ref
-        with patch('houdini_extraction.file_ref.EXTRACT_DIR', tempfile.mkdtemp()) as tmp:
+        with patch('houdini_extraction.file_ref.EXTRACT_DIR', tempfile.mkdtemp()):
             result = write_file_ref(b'test data', '.bin', prefix='test')
             assert result['type'] == 'file_ref'
             assert result['format'] == 'bin'
@@ -433,3 +430,84 @@ class TestAOVBuilder:
         from houdini_extraction.aov import _build_aov_entry
         result = _build_aov_entry('custom_occlusion')
         assert result['aov_name'] == 'custom_occlusion'
+
+
+# =============================================================================
+# Invalidation callback dispatch tests
+# =============================================================================
+
+class TestInvalidationCallbacks:
+    """Test that node event callbacks dispatch correct event types."""
+
+    def test_cook_complete_from_appearance_changed(self):
+        """AppearanceChanged event should produce cook_complete."""
+        from houdini_extraction.invalidation import (
+            _event_queue,
+            _node_event_callback,
+            drain_events,
+        )
+
+        _event_queue.clear()
+
+        # Simulate AppearanceChanged event
+        mock_event = MagicMock()
+        mock_event.__str__ = lambda self: 'nodeEventType.AppearanceChanged'
+
+        mock_node = MagicMock()
+        mock_node.path.return_value = '/obj/geo1/scatter1'
+
+        _node_event_callback(mock_event, node=mock_node)
+
+        events = drain_events()
+        assert len(events) == 1
+        assert events[0]['event_type'] == 'cook_complete'
+        assert events[0]['path'] == '/obj/geo1/scatter1'
+
+    def test_child_created_event(self):
+        """ChildCreated event should produce node_created."""
+        from houdini_extraction.invalidation import (
+            _event_queue,
+            _node_event_callback,
+            drain_events,
+        )
+
+        _event_queue.clear()
+
+        mock_event = MagicMock()
+        mock_event.__str__ = lambda self: 'nodeEventType.ChildCreated'
+
+        mock_node = MagicMock()
+        mock_node.path.return_value = '/obj'
+
+        mock_child = MagicMock()
+        mock_child.path.return_value = '/obj/geo2'
+
+        _node_event_callback(mock_event, node=mock_node, child_node=mock_child)
+
+        events = drain_events()
+        assert len(events) == 1
+        assert events[0]['event_type'] == 'node_created'
+        assert events[0]['path'] == '/obj/geo2'
+
+    def test_input_rewired_event(self):
+        """InputRewired event should produce connection_changed."""
+        from houdini_extraction.invalidation import (
+            _event_queue,
+            _node_event_callback,
+            drain_events,
+        )
+
+        _event_queue.clear()
+
+        mock_event = MagicMock()
+        mock_event.__str__ = lambda self: 'nodeEventType.InputRewired'
+
+        mock_node = MagicMock()
+        mock_node.path.return_value = '/obj/geo1/merge1'
+
+        _node_event_callback(mock_event, node=mock_node)
+
+        events = drain_events()
+        assert len(events) == 1
+        assert events[0]['event_type'] == 'connection_changed'
+        assert events[0]['path'] == '/obj/geo1/merge1'
