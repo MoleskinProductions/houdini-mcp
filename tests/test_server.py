@@ -479,7 +479,7 @@ class TestVGGTCreateNode:
             return {'success': True}
 
         with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge):
-            result = await call_tool('houdini_vggt_create_node', {
+            await call_tool('houdini_vggt_create_node', {
                 'module': 'Reconstruct',
                 'parms': {'image_dir': '/tmp/images', 'resize_long_edge': 512},
             })
@@ -541,7 +541,7 @@ class TestVGGTExecute:
         mock_client.__aexit__.return_value = None
 
         with patch('houdini_mcp.server.httpx.AsyncClient', return_value=mock_client) as mock_cls:
-            result = await call_tool('houdini_vggt_execute', {
+            await call_tool('houdini_vggt_execute', {
                 'path': '/obj/geo1/r', 'timeout': 9999
             })
             # Verify timeout was capped to 3600

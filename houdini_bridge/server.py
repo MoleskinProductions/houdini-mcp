@@ -2225,7 +2225,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         import os
                         result_path = os.path.join(result_dir, "result.json")
                         if os.path.exists(result_path):
-                            with open(result_path, 'r') as f:
+                            with open(result_path) as f:
                                 result_data = json.load(f)
 
                 return {
@@ -2360,7 +2360,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
             result_dir = result_dir_parm.evalAsString()
             if not result_dir or not os.path.isdir(result_dir):
-                return {'error': f'No result directory found (node may not have been executed yet)'}
+                return {'error': 'No result directory found (node may not have been executed yet)'}
 
             artifacts = {'path': path, 'result_dir': result_dir}
 
@@ -2383,7 +2383,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     continue
 
                 try:
-                    with open(file_path, 'r') as f:
+                    with open(file_path) as f:
                         if filename.endswith('.json'):
                             artifacts[key] = json.load(f)
                         else:
