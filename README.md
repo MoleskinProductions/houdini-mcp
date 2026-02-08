@@ -128,7 +128,8 @@ Set npts = 5000 on /obj/geo1/scatter1
 | `houdini_node_tree` | Get hierarchical node tree |
 | `houdini_node_search` | Search nodes by name/type |
 | `houdini_parm_get` | Get parameter values |
-| `houdini_cook_status` | Get cook status and memory usage |
+| `houdini_parm_template` | Get parameter schema (names, types, defaults, ranges, menus) |
+| `houdini_cook_status` | Cook/render status (state, progress, memory, errors, warnings) |
 | `houdini_hda_list` | List available HDAs |
 
 ### Write Operations
@@ -176,6 +177,23 @@ Set npts = 5000 on /obj/geo1/scatter1
 | `houdini_hda_create` | Package a node into a reusable .hda file |
 | `houdini_hda_install` | Install an HDA file into the session |
 | `houdini_hda_reload` | Reload HDA definitions (specific file or all) |
+
+### Data Extraction
+| Tool | Description |
+|------|-------------|
+| `houdini_geo_info` | Geometry summary: counts, prim types, bounds, attributes, groups |
+| `houdini_attrib_read` | Bulk-read attribute values (inline or file_ref for large data) |
+| `houdini_aov_list` | AOV render pass configurations from LOP/ROP nodes |
+| `houdini_camera_get` | Camera config: focal, aperture, resolution, world_matrix |
+
+### VGGT Pipeline
+| Tool | Description |
+|------|-------------|
+| `houdini_vggt_setup` | Install VGGT Toolkit HDAs and verify environment |
+| `houdini_vggt_create_node` | Create a VGGT pipeline node with parameters |
+| `houdini_vggt_execute` | Run GPU inference on a VGGT node |
+| `houdini_vggt_pipeline_status` | Status of all VGGT nodes in the scene |
+| `houdini_vggt_read_results` | Read output artifacts from a VGGT node |
 
 ## Auto-Start Bridge (Optional)
 
@@ -235,6 +253,8 @@ ruff check .
 - [x] **Phase 3**: Geometry export
 - [x] **Phase 4**: Render tools (viewport snapshot, Karma, flipbook)
 - [x] **Phase 5**: PDG/TOPs, USD/Solaris/LOPs, HDA management
+- [x] **Phase 5.5**: Data extraction plugin (geo_info, attrib_read, aov_list, camera_get)
+- [x] **Phase 5.6**: VGGT pipeline tools (setup, create, execute, status, results)
 - [ ] **Phase 6**: MCP Apps (interactive UI in Claude)
 - [ ] **Phase 7**: Self-Generating UI (intent → interface synthesis)
 
