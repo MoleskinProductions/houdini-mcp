@@ -206,6 +206,20 @@ TOOLS = [
         }
     ),
     Tool(
+        name="houdini_parm_template",
+        description="Get parameter schema/template for a node: names, labels, types, defaults, min/max, menu items.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Full path to the node"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
         name="houdini_cook_status",
         description="Get cook/render status: state (idle/cooking/rendering/error), progress, current_node, elapsed_seconds, memory_bytes, errors, warnings.",
         inputSchema={
@@ -1340,6 +1354,9 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             'houdini_parm_get': ('GET', '/parm/get', {
                 'path': arguments.get('path'),
                 'parm': arguments.get('parm')
+            }),
+            'houdini_parm_template': ('GET', '/parm/template', {
+                'path': arguments.get('path')
             }),
             'houdini_cook_status': ('GET', '/cook/status', None),
             'houdini_hda_list': ('GET', '/hda/list', {'category': arguments.get('category')}),
