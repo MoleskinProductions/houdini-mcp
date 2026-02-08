@@ -5,7 +5,11 @@ This is the external MCP server that Claude agents communicate with.
 It forwards requests to the Houdini bridge server running inside Houdini.
 
 Usage:
+    # stdio transport (Claude Code / Claude Desktop)
     python -m houdini_mcp.server
+
+    # Streamable HTTP transport (Claude web app via tunnel)
+    python -m houdini_mcp.server --http --port 8080
 
     Or configure in Claude Desktop / Claude Code config:
     {
@@ -20,6 +24,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -886,6 +891,84 @@ TOOLS = [
         }
     ),
 
+    # --- Extraction Operations ---
+    Tool(
+        name="houdini_geo_info",
+        description="Get geometry summary from a SOP node: point/prim/vertex counts, prim type breakdown, bounding box, attribute catalog by class, groups, and memory usage.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a SOP node with geometry, e.g., '/obj/geo1/OUT'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_attrib_read",
+        description="Bulk-read attribute values from geometry. Returns inline JSON for small data or a file reference for large data (>1MB). Use houdini_geo_info first to discover available attributes.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a SOP node with geometry"
+                },
+                "attrib_class": {
+                    "type": "string",
+                    "enum": ["point", "prim", "vertex", "detail"],
+                    "description": "Attribute class (default: point)",
+                    "default": "point"
+                },
+                "attrib_name": {
+                    "type": "string",
+                    "description": "Name of the attribute to read, e.g., 'P', 'N', 'Cd'"
+                },
+                "start": {
+                    "type": "integer",
+                    "description": "Start index for partial read (default: 0)",
+                    "default": 0
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of elements to read (-1 for all, default: -1)",
+                    "default": -1
+                }
+            },
+            "required": ["path", "attrib_name"]
+        }
+    ),
+    Tool(
+        name="houdini_aov_list",
+        description="Get AOV (render pass) configurations from a LOP or ROP node. Returns AOV names, types, data formats, and sources. Tries USD RenderVar prims first, falls back to Karma ROP parameters.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a LOP or ROP node, e.g., '/stage/karmarendersettings1' or '/out/karma1'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+    Tool(
+        name="houdini_camera_get",
+        description="Get camera configuration including focal length, aperture, resolution, clipping planes, and world transform matrix (4x4 row-major).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a camera node, e.g., '/obj/cam1'"
+                }
+            },
+            "required": ["path"]
+        }
+    ),
+
     # --- HDA Management Operations ---
     Tool(
         name="houdini_hda_get",
@@ -1304,6 +1387,24 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             }),
             'houdini_lop_import': ('POST', '/lop/import', arguments),
 
+            # Extraction
+            'houdini_geo_info': ('GET', '/extract/geo_info', {
+                'path': arguments.get('path'),
+            }),
+            'houdini_attrib_read': ('GET', '/extract/attrib_read', {
+                'path': arguments.get('path'),
+                'attrib_class': arguments.get('attrib_class', 'point'),
+                'attrib_name': arguments.get('attrib_name'),
+                'start': arguments.get('start', 0),
+                'count': arguments.get('count', -1),
+            }),
+            'houdini_aov_list': ('GET', '/extract/aov_list', {
+                'path': arguments.get('path'),
+            }),
+            'houdini_camera_get': ('GET', '/extract/camera_get', {
+                'path': arguments.get('path'),
+            }),
+
             # HDA Management
             'houdini_hda_get': ('GET', '/hda/get', {
                 'node_type': arguments.get('node_type'),
@@ -1366,7 +1467,7 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 # =============================================================================
 
 async def main():
-    """Run the MCP server."""
+    """Run the MCP server with stdio transport."""
     from mcp.server.stdio import stdio_server
 
     logger.info(f"Starting Houdini MCP server (bridge: {HOUDINI_BRIDGE_URL})")
@@ -1379,9 +1480,63 @@ async def main():
         )
 
 
+async def main_http(host: str, port: int) -> None:
+    """Run the MCP server with streamable HTTP transport."""
+    import uvicorn
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.types import Receive, Scope, Send
+
+    logger.info(
+        f"Starting Houdini MCP HTTP server on {host}:{port} "
+        f"(bridge: {HOUDINI_BRIDGE_URL})"
+    )
+
+    session_manager = StreamableHTTPSessionManager(app=server)
+
+    class MCPTransportApp:
+        """ASGI app that delegates to the session manager."""
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            await session_manager.handle_request(scope, receive, send)
+
+    starlette_app = Starlette(
+        routes=[Route("/mcp", endpoint=MCPTransportApp())],
+        lifespan=lambda app: session_manager.run(),
+    )
+
+    config = uvicorn.Config(
+        starlette_app,
+        host=host,
+        port=port,
+        log_level="info",
+    )
+    uv_server = uvicorn.Server(config)
+    await uv_server.serve()
+
+
 def run():
     """Entry point for running as module."""
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Houdini MCP Server")
+    parser.add_argument(
+        "--http", action="store_true",
+        help="Use streamable HTTP transport instead of stdio",
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0",
+        help="HTTP server host (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080,
+        help="HTTP server port (default: 8080)",
+    )
+    args = parser.parse_args()
+
+    if args.http:
+        asyncio.run(main_http(args.host, args.port))
+    else:
+        asyncio.run(main())
 
 
 if __name__ == "__main__":

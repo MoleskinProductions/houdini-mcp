@@ -102,7 +102,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_error_json(500, f"Internal error: {str(e)}\n{traceback.format_exc()}")
         else:
-            self.send_error_json(404, f"Unknown route: {route}")
+            # Check extraction plugin handlers
+            ext_handlers = getattr(self.__class__, '_extraction_handlers', {})
+            ext_handler = ext_handlers.get(route)
+            if ext_handler:
+                try:
+                    result = ext_handler(params)
+                    self.send_json(result)
+                except Exception as e:
+                    self.send_error_json(
+                        500, f"Extraction error: {str(e)}\n{traceback.format_exc()}"
+                    )
+            else:
+                self.send_error_json(404, f"Unknown route: {route}")
 
     def do_POST(self):  # noqa: N802
         """Handle POST requests (mutations)."""
@@ -2275,6 +2287,20 @@ def start_bridge(port: int = 8765, host: str = '127.0.0.1') -> HTTPServer:
         _server_instance = HTTPServer((host, port), HoudiniBridgeHandler)
         _server_thread = threading.Thread(target=_server_instance.serve_forever, daemon=True)
         _server_thread.start()
+
+    # Soft-import extraction plugin — all existing tools work without it
+    try:
+        from houdini_extraction import ExtractionPlugin
+        from houdini_extraction.invalidation import start_invalidation
+
+        plugin = ExtractionPlugin()
+        plugin.register_handlers(HoudiniBridgeHandler)
+        start_invalidation()
+        print("[HoudiniBridge] Extraction plugin loaded")
+    except ImportError:
+        print("[HoudiniBridge] Extraction plugin not installed (optional)")
+    except Exception as exc:
+        print(f"[HoudiniBridge] Extraction plugin failed to load: {exc}")
 
     print(f"[HoudiniBridge] Server started on http://{host}:{port}")
     print("[HoudiniBridge] Endpoints: /ping, /scene/info, /node/get, /node/tree, ...")

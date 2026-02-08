@@ -50,7 +50,7 @@ Documentation = "https://github.com/MoleskinProductions/houdini-mcp#readme"
 Repository = "https://github.com/MoleskinProductions/houdini-mcp"
 
 [tool.hatch.build.targets.wheel]
-packages = ["houdini_mcp", "houdini_bridge"]
+packages = ["houdini_mcp", "houdini_bridge", "houdini_extraction"]
 
 [tool.ruff]
 line-length = 100
