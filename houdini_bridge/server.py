@@ -236,7 +236,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_node():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             return self._serialize_node(node, include_parms=True)
 
@@ -251,7 +251,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_tree():
             root_node = hou.node(root)
             if not root_node:
-                return {'error': f'Root node not found: {root}'}
+                return self._error_response('NODE_NOT_FOUND', f'Root node not found: {root}')
 
             def traverse(node, current_depth):
                 data = {
@@ -285,7 +285,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def search():
             root_node = hou.node(root)
             if not root_node:
-                return {'error': f'Root not found: {root}'}
+                return self._error_response('NODE_NOT_FOUND', f'Root not found: {root}')
 
             results = []
             for node in root_node.allSubChildren():
@@ -316,7 +316,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_parms():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             if parm_name:
                 # Single parameter
@@ -328,7 +328,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 if parm_tuple:
                     return self._serialize_parm_tuple(parm_tuple)
 
-                return {'error': f'Parameter not found: {parm_name}'}
+                return self._error_response('PARM_NOT_FOUND', f'Parameter not found: {parm_name}')
             else:
                 # All parameters (non-default only for brevity)
                 parms = []
@@ -355,7 +355,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_template():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             def serialize_template(tmpl):
                 data = {
@@ -384,14 +384,74 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         self.send_json(get_template())
 
     def handle_cook_status(self, params: dict):
-        """Get current cook/simulation status."""
+        """Get current cook/simulation status (§2.6 schema)."""
         @require_main_thread
         def get_status():
+            # Determine state
+            is_cooking = hou.isSimulating()
+            state = 'cooking' if is_cooking else 'idle'
+
+            # Try to detect rendering state
+            try:
+                if hou.hipFile.isLoadingHipFile():
+                    state = 'idle'
+            except Exception:
+                pass
+
+            # Current node being cooked
+            current_node = None
+            try:
+                perf = hou.perfMon
+                if hasattr(perf, 'isRecording') and perf.isRecording():
+                    # perfMon doesn't directly expose current cooking node
+                    pass
+            except Exception:
+                pass
+
+            # Elapsed seconds (session uptime as proxy — no per-cook timer)
+            elapsed_seconds = None
+            try:
+                elapsed_seconds = hou.time()
+            except Exception:
+                pass
+
+            # Memory in bytes
+            memory_bytes = int(self._get_memory_mb() * 1024 * 1024)
+            if memory_bytes < 0:
+                memory_bytes = 0
+
+            # Collect errors and warnings from currently displayed nodes
+            errors: list[str] = []
+            warnings: list[str] = []
+            try:
+                for root_path in ('/obj', '/stage', '/out'):
+                    root = hou.node(root_path)
+                    if root is None:
+                        continue
+                    for child in root.children():
+                        for e in child.errors():
+                            msg = e if isinstance(e, str) else str(e)
+                            if msg:
+                                errors.append(f'{child.path()}: {msg}')
+                        for w in child.warnings():
+                            msg = w if isinstance(w, str) else str(w)
+                            if msg:
+                                warnings.append(f'{child.path()}: {msg}')
+            except Exception:
+                pass
+
+            # If there are errors and we're idle, report error state
+            if errors and state == 'idle':
+                state = 'error'
+
             return {
-                'is_cooking': hou.isSimulating(),
-                'current_frame': hou.frame(),
-                'current_time': hou.time(),
-                'memory_usage_mb': self._get_memory_mb(),
+                'state': state,
+                'progress': None,
+                'current_node': current_node,
+                'elapsed_seconds': elapsed_seconds,
+                'memory_bytes': memory_bytes,
+                'errors': errors,
+                'warnings': warnings,
             }
 
         self.send_json(get_status())
@@ -437,7 +497,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def create():
             parent = hou.node(parent_path)
             if not parent:
-                return {'error': f'Parent not found: {parent_path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Parent not found: {parent_path}')
 
             try:
                 with hou.undos.group("MCP: Create Node"):
@@ -454,7 +514,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'type': node.type().name(),
                     }
             except hou.OperationFailed as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(create())
 
@@ -469,14 +529,14 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def delete():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 with hou.undos.group("MCP: Delete Node"):
                     node.destroy()
                     return {'success': True, 'deleted': path}
             except hou.OperationFailed as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(delete())
 
@@ -493,7 +553,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def rename():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 with hou.undos.group("MCP: Rename Node"):
@@ -505,7 +565,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'name': node.name(),
                     }
             except hou.OperationFailed as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(rename())
 
@@ -526,9 +586,9 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             to_node = hou.node(to_path)
 
             if not from_node:
-                return {'error': f'Source node not found: {from_path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Source node not found: {from_path}')
             if not to_node:
-                return {'error': f'Destination node not found: {to_path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Destination node not found: {to_path}')
 
             try:
                 with hou.undos.group("MCP: Connect Nodes"):
@@ -541,7 +601,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'to_input': to_input,
                     }
             except hou.OperationFailed as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(connect())
 
@@ -558,14 +618,14 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def disconnect():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 with hou.undos.group("MCP: Disconnect Node"):
                     node.setInput(input_index, None)
                     return {'success': True, 'path': path, 'input': input_index}
             except hou.OperationFailed as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(disconnect())
 
@@ -583,7 +643,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def set_flag():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 with hou.undos.group("MCP: Set Flag"):
@@ -598,11 +658,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     elif flag == 'selectable':
                         node.setSelectableInViewport(value)
                     else:
-                        return {'error': f'Unknown flag: {flag}'}
+                        return self._error_response('TYPE_MISMATCH', f'Unknown flag: {flag}')
 
                     return {'success': True, 'path': path, 'flag': flag, 'value': value}
             except (hou.OperationFailed, AttributeError) as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(set_flag())
 
@@ -614,13 +674,13 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def layout():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 node.layoutChildren()
                 return {'success': True, 'path': path}
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(layout())
 
@@ -638,13 +698,13 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def set_parm():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             parm = node.parm(parm_name)
             parm_tuple = node.parmTuple(parm_name) if not parm else None
 
             if not parm and not parm_tuple:
-                return {'error': f'Parameter not found: {parm_name}'}
+                return self._error_response('PARM_NOT_FOUND', f'Parameter not found: {parm_name}')
 
             try:
                 with hou.undos.group("MCP: Set Parameter"):
@@ -659,14 +719,14 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         if isinstance(value, list | tuple):
                             parm_tuple.set(value)
                         else:
-                            return {'error': f'{parm_name} is a tuple, expected list/tuple'}
+                            return self._error_response('TYPE_MISMATCH', f'{parm_name} is a tuple, expected list/tuple')
                         return {
                             'success': True,
                             'parm': parm_name,
                             'value': list(parm_tuple.eval()),
                         }
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(set_parm())
 
@@ -683,11 +743,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def revert():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             parm = node.parm(parm_name)
             if not parm:
-                return {'error': f'Parameter not found: {parm_name}'}
+                return self._error_response('PARM_NOT_FOUND', f'Parameter not found: {parm_name}')
 
             try:
                 with hou.undos.group("MCP: Revert Parameter"):
@@ -698,7 +758,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'value': parm.eval(),
                     }
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(revert())
 
@@ -717,11 +777,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def set_expr():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             parm = node.parm(parm_name)
             if not parm:
-                return {'error': f'Parameter not found: {parm_name}'}
+                return self._error_response('PARM_NOT_FOUND', f'Parameter not found: {parm_name}')
 
             try:
                 with hou.undos.group("MCP: Set Expression"):
@@ -736,7 +796,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'value': parm.eval(),
                     }
             except Exception as e:
-                return {'error': f'Invalid expression: {str(e)}'}
+                return self._error_response('TYPE_MISMATCH', f'Invalid expression: {str(e)}')
 
         self.send_json(set_expr())
 
@@ -756,7 +816,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'path': hou.hipFile.path(),
                 }
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(save())
 
@@ -773,7 +833,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 hou.setFrame(frame)
                 return {'success': True, 'frame': hou.frame()}
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(set_frame())
 
@@ -791,14 +851,14 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def export():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             if not hasattr(node, 'geometry'):
-                return {'error': 'Node does not have geometry output'}
+                return self._error_response('TYPE_MISMATCH', 'Node does not have geometry output')
 
             geo = node.geometry()
             if geo is None:
-                return {'error': 'Node has no cooked geometry'}
+                return self._error_response('COOK_ERROR', 'Node has no cooked geometry')
 
             # Generate output path
             if not output:
@@ -843,7 +903,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'stats': stats,
                 }
             except Exception as e:
-                return {'error': str(e)}
+                return self._error_response('EXTRACTION_FAILED', str(e))
 
         self.send_json(export())
 
@@ -880,7 +940,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         break
 
                 if not scene_viewer:
-                    return {'error': 'No scene viewer found'}
+                    return self._error_response('EXTRACTION_FAILED', 'No scene viewer found')
 
                 try:
                     # Get the viewport
@@ -903,7 +963,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'resolution': resolution,
                     }
                 except Exception as e:
-                    return {'error': f'Viewport capture failed: {str(e)}'}
+                    return self._error_response('EXTRACTION_FAILED', f'Viewport capture failed: {str(e)}')
 
             elif render_type == 'karma':
                 # Render via Karma
@@ -918,11 +978,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                                 break
 
                 if not karma_node:
-                    return {'error': 'No LOP node specified and no Karma node found in /stage'}
+                    return self._error_response('NODE_NOT_FOUND', 'No LOP node specified and no Karma node found in /stage')
 
                 node = hou.node(karma_node)
                 if not node:
-                    return {'error': f'LOP node not found: {karma_node}'}
+                    return self._error_response('NODE_NOT_FOUND', f'LOP node not found: {karma_node}')
 
                 try:
                     # Check if it's a USD Render ROP or similar
@@ -947,12 +1007,12 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             'resolution': resolution,
                         }
                     else:
-                        return {'error': f'Node {karma_node} does not support rendering'}
+                        return self._error_response('TYPE_MISMATCH', f'Node {karma_node} does not support rendering')
                 except Exception as e:
-                    return {'error': f'Karma render failed: {str(e)}'}
+                    return self._error_response('EXTRACTION_FAILED', f'Karma render failed: {str(e)}')
 
             else:
-                return {'error': f'Unknown render type: {render_type}'}
+                return self._error_response('TYPE_MISMATCH', f'Unknown render type: {render_type}')
 
         self.send_json(render())
 
@@ -990,7 +1050,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     break
 
             if not scene_viewer:
-                return {'error': 'No scene viewer found'}
+                return self._error_response('EXTRACTION_FAILED', 'No scene viewer found')
 
             try:
                 viewport = scene_viewer.curViewport()
@@ -1008,7 +1068,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'resolution': resolution,
                 }
             except Exception as e:
-                return {'error': f'Flipbook failed: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Flipbook failed: {str(e)}')
 
         self.send_json(flipbook())
 
@@ -1040,11 +1100,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         elif op_type == 'set_flag':
                             result = self._batch_set_flag(op_args)
                         else:
-                            result = {'error': f'Unknown operation type: {op_type}'}
+                            result = self._error_response('TYPE_MISMATCH', f'Unknown operation type: {op_type}')
 
                         results.append({'index': i, 'type': op_type, 'result': result})
                     except Exception as e:
-                        results.append({'index': i, 'type': op_type, 'error': str(e)})
+                        results.append({'index': i, 'type': op_type, 'result': self._error_response('EXTRACTION_FAILED', str(e))})
 
             return {'results': results, 'count': len(results)}
 
@@ -1053,6 +1113,31 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
     # =========================================================================
     # Internal Helpers
     # =========================================================================
+
+    @staticmethod
+    def _error_response(
+        code: str,
+        message: str,
+        **context: Any,
+    ) -> dict:
+        """Build a contract-compliant error response (§4.4).
+
+        Args:
+            code: Error code from §4.4 vocabulary.
+            message: Human-readable error message.
+            **context: Additional context fields.
+
+        Returns:
+            Error dict matching §4.4 format.
+        """
+        result: dict[str, Any] = {
+            'error': True,
+            'code': code,
+            'message': message,
+        }
+        if context:
+            result['context'] = context
+        return result
 
     @staticmethod
     def _get_memory_mb() -> float:
@@ -1300,7 +1385,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         """Internal create for batch operations."""
         parent = hou.node(args.get('parent', '/obj'))
         if not parent:
-            return {'error': 'Parent not found'}
+            return self._error_response('NODE_NOT_FOUND', 'Parent not found')
         node = parent.createNode(args['type'], node_name=args.get('name'))
         if args.get('position'):
             node.setPosition(hou.Vector2(args['position']))
@@ -1311,7 +1396,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         from_node = hou.node(args['from'])
         to_node = hou.node(args['to'])
         if not from_node or not to_node:
-            return {'error': 'Node not found'}
+            return self._error_response('NODE_NOT_FOUND', 'Node not found')
         to_node.setInput(args.get('to_input', 0), from_node, args.get('from_output', 0))
         return {'success': True}
 
@@ -1319,10 +1404,10 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         """Internal set_parm for batch operations."""
         node = hou.node(args['path'])
         if not node:
-            return {'error': 'Node not found'}
+            return self._error_response('NODE_NOT_FOUND', 'Node not found')
         parm = node.parm(args['parm'])
         if not parm:
-            return {'error': 'Parameter not found'}
+            return self._error_response('PARM_NOT_FOUND', 'Parameter not found')
         parm.set(args['value'])
         return {'value': parm.eval()}
 
@@ -1330,7 +1415,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         """Internal set_flag for batch operations."""
         node = hou.node(args['path'])
         if not node:
-            return {'error': 'Node not found'}
+            return self._error_response('NODE_NOT_FOUND', 'Node not found')
         flag = args['flag']
         value = args.get('value', True)
         if flag == 'display':
@@ -1356,15 +1441,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_status():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 ctx = node.getPDGGraphContext()
             except AttributeError:
-                return {'error': f'Node is not a TOP network or node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a TOP network or node: {path}')
 
             if ctx is None:
-                return {'error': f'No PDG graph context found at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No PDG graph context found at: {path}')
 
             try:
                 cook_state = str(ctx.cookState())
@@ -1440,15 +1525,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_workitems():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 pdg_node = node.getPDGNode()
             except AttributeError:
-                return {'error': f'Node is not a TOP node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a TOP node: {path}')
 
             if pdg_node is None:
-                return {'error': f'No PDG node found at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No PDG node found at: {path}')
 
             # Map filter names to PDG state suffixes
             _filter_map = {
@@ -1492,15 +1577,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def cook():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 ctx = node.getPDGGraphContext()
             except AttributeError:
-                return {'error': f'Node is not a TOP network or node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a TOP network or node: {path}')
 
             if ctx is None:
-                return {'error': f'No PDG graph context found at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No PDG graph context found at: {path}')
 
             try:
                 if tops_only:
@@ -1513,7 +1598,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'message': 'Cook initiated (non-blocking). Use houdini_pdg_status to poll progress.',
                 }
             except Exception as e:
-                return {'error': f'Failed to cook PDG graph: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to cook PDG graph: {str(e)}')
 
         self.send_json(cook())
 
@@ -1530,15 +1615,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def dirty():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 ctx = node.getPDGGraphContext()
             except AttributeError:
-                return {'error': f'Node is not a TOP network or node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a TOP network or node: {path}')
 
             if ctx is None:
-                return {'error': f'No PDG graph context found at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No PDG graph context found at: {path}')
 
             try:
                 if dirty_all:
@@ -1556,7 +1641,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     node.dirtyAllTasks(False)
                 return {'success': True, 'path': path, 'dirty_all': dirty_all}
             except Exception as e:
-                return {'error': f'Failed to dirty PDG tasks: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to dirty PDG tasks: {str(e)}')
 
         self.send_json(dirty())
 
@@ -1572,21 +1657,21 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def cancel():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 ctx = node.getPDGGraphContext()
             except AttributeError:
-                return {'error': f'Node is not a TOP network or node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a TOP network or node: {path}')
 
             if ctx is None:
-                return {'error': f'No PDG graph context found at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No PDG graph context found at: {path}')
 
             try:
                 ctx.cancelCook()
                 return {'success': True, 'path': path}
             except Exception as e:
-                return {'error': f'Failed to cancel PDG cook: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to cancel PDG cook: {str(e)}')
 
         self.send_json(cancel())
 
@@ -1605,15 +1690,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_info():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 stage = node.stage()
             except AttributeError:
-                return {'error': f'Node is not a LOP node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a LOP node: {path}')
 
             if stage is None:
-                return {'error': f'No USD stage at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No USD stage at: {path}')
 
             # Count prims
             prim_count = 0
@@ -1679,19 +1764,19 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_prim():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 stage = node.stage()
             except AttributeError:
-                return {'error': f'Node is not a LOP node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a LOP node: {path}')
 
             if stage is None:
-                return {'error': f'No USD stage at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No USD stage at: {path}')
 
             prim = stage.GetPrimAtPath(prim_path)
             if not prim or not prim.IsValid():
-                return {'error': f'Prim not found: {prim_path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Prim not found: {prim_path}')
 
             return self._serialize_usd_prim(prim, include_attrs=include_attrs)
 
@@ -1708,15 +1793,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def get_layers():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 stage = node.stage()
             except AttributeError:
-                return {'error': f'Node is not a LOP node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a LOP node: {path}')
 
             if stage is None:
-                return {'error': f'No USD stage at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No USD stage at: {path}')
 
             layers = []
             try:
@@ -1734,7 +1819,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         layer_info['root_prim_paths'] = []
                     layers.append(layer_info)
             except Exception as e:
-                return {'error': f'Failed to read layer stack: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to read layer stack: {str(e)}')
 
             # Active layer
             active_layer_id = None
@@ -1766,15 +1851,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def search():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             try:
                 stage = node.stage()
             except AttributeError:
-                return {'error': f'Node is not a LOP node: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'Node is not a LOP node: {path}')
 
             if stage is None:
-                return {'error': f'No USD stage at: {path}'}
+                return self._error_response('TYPE_MISMATCH', f'No USD stage at: {path}')
 
             results = []
             try:
@@ -1805,7 +1890,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'kind': kind,
                     })
             except Exception as e:
-                return {'error': f'Search failed: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Search failed: {str(e)}')
 
             return {
                 'node_path': path,
@@ -1835,7 +1920,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def do_import():
             parent = hou.node(path)
             if not parent:
-                return {'error': f'Parent node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Parent node not found: {path}')
 
             try:
                 with hou.undos.group("MCP: LOP Import"):
@@ -1861,7 +1946,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'file': file_path,
                     }
             except Exception as e:
-                return {'error': f'Import failed: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Import failed: {str(e)}')
 
         self.send_json(do_import())
 
@@ -1897,11 +1982,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             break
 
                 if not definition:
-                    return {'error': f'HDA definition not found: {node_type}'}
+                    return self._error_response('NODE_NOT_FOUND', f'HDA definition not found: {node_type}')
 
                 return self._serialize_hda_definition(definition)
             except Exception as e:
-                return {'error': f'Failed to get HDA info: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to get HDA info: {str(e)}')
 
         self.send_json(get_hda())
 
@@ -1923,7 +2008,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def create_hda():
             node = hou.node(node_path)
             if not node:
-                return {'error': f'Node not found: {node_path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {node_path}')
 
             try:
                 with hou.undos.group("MCP: Create HDA"):
@@ -1949,7 +2034,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'node_path': hda_node.path(),
                     }
             except Exception as e:
-                return {'error': f'Failed to create HDA: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to create HDA: {str(e)}')
 
         self.send_json(create_hda())
 
@@ -1982,7 +2067,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'count': len(definitions),
                 }
             except Exception as e:
-                return {'error': f'Failed to install HDA: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to install HDA: {str(e)}')
 
         self.send_json(install())
 
@@ -2000,7 +2085,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     hou.hda.reloadAllFiles(rescan=True)
                     return {'success': True, 'message': 'All HDA files reloaded'}
             except Exception as e:
-                return {'error': f'Failed to reload HDA: {str(e)}'}
+                return self._error_response('EXTRACTION_FAILED', f'Failed to reload HDA: {str(e)}')
 
         self.send_json(reload())
 

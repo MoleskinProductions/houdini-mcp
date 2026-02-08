@@ -207,7 +207,7 @@ TOOLS = [
     ),
     Tool(
         name="houdini_cook_status",
-        description="Get current cook/simulation status and memory usage.",
+        description="Get cook/render status: state (idle/cooking/rendering/error), progress, current_node, elapsed_seconds, memory_bytes, errors, warnings.",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -1428,11 +1428,18 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
             result = await call_bridge('POST', endpoint, body=data)
 
         # Check for errors in response
+        # Supports both legacy {'error': 'msg'} and contract {'error': true, 'code': ..., 'message': ...}
         if isinstance(result, dict) and 'error' in result:
-            return CallToolResult(content=[TextContent(
-                type="text",
-                text=f"Houdini error: {result['error']}"
-            )])
+            err = result['error']
+            if err is True:
+                # Contract §4.4 format
+                code = result.get('code', 'UNKNOWN')
+                message = result.get('message', 'Unknown error')
+                text = f"Houdini error [{code}]: {message}"
+            else:
+                # Legacy format: error value is the message string
+                text = f"Houdini error: {err}"
+            return CallToolResult(content=[TextContent(type="text", text=text)])
 
         return CallToolResult(content=[TextContent(
             type="text",
