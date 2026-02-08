@@ -529,7 +529,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'type': node.type().name(),
                     }
             except hou.OperationFailed as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(create())
 
@@ -551,7 +551,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     node.destroy()
                     return {'success': True, 'deleted': path}
             except hou.OperationFailed as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(delete())
 
@@ -580,7 +580,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'name': node.name(),
                     }
             except hou.OperationFailed as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(rename())
 
@@ -616,7 +616,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'to_input': to_input,
                     }
             except hou.OperationFailed as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(connect())
 
@@ -640,7 +640,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     node.setInput(input_index, None)
                     return {'success': True, 'path': path, 'input': input_index}
             except hou.OperationFailed as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(disconnect())
 
@@ -677,7 +677,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
                     return {'success': True, 'path': path, 'flag': flag, 'value': value}
             except (hou.OperationFailed, AttributeError) as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(set_flag())
 
@@ -695,7 +695,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 node.layoutChildren()
                 return {'success': True, 'path': path}
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(layout())
 
@@ -741,7 +741,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             'value': list(parm_tuple.eval()),
                         }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('PARM_SET_FAILED', str(e))
 
         self.send_json(set_parm())
 
@@ -773,7 +773,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'value': parm.eval(),
                     }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('PARM_SET_FAILED', str(e))
 
         self.send_json(revert())
 
@@ -831,7 +831,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'path': hou.hipFile.path(),
                 }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('SAVE_FAILED', str(e))
 
         self.send_json(save())
 
@@ -848,7 +848,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 hou.setFrame(frame)
                 return {'success': True, 'frame': hou.frame()}
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('OPERATION_FAILED', str(e))
 
         self.send_json(set_frame())
 
@@ -918,7 +918,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'stats': stats,
                 }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', str(e))
+                return self._error_response('EXPORT_FAILED', str(e))
 
         self.send_json(export())
 
@@ -955,7 +955,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         break
 
                 if not scene_viewer:
-                    return self._error_response('EXTRACTION_FAILED', 'No scene viewer found')
+                    return self._error_response('RENDER_FAILED', 'No scene viewer found')
 
                 try:
                     # Get the viewport
@@ -978,7 +978,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'resolution': resolution,
                     }
                 except Exception as e:
-                    return self._error_response('EXTRACTION_FAILED', f'Viewport capture failed: {str(e)}')
+                    return self._error_response('RENDER_FAILED', f'Viewport capture failed: {str(e)}')
 
             elif render_type == 'karma':
                 # Render via Karma
@@ -1024,7 +1024,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     else:
                         return self._error_response('TYPE_MISMATCH', f'Node {karma_node} does not support rendering')
                 except Exception as e:
-                    return self._error_response('EXTRACTION_FAILED', f'Karma render failed: {str(e)}')
+                    return self._error_response('RENDER_FAILED', f'Karma render failed: {str(e)}')
 
             else:
                 return self._error_response('TYPE_MISMATCH', f'Unknown render type: {render_type}')
@@ -1065,7 +1065,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     break
 
             if not scene_viewer:
-                return self._error_response('EXTRACTION_FAILED', 'No scene viewer found')
+                return self._error_response('RENDER_FAILED', 'No scene viewer found')
 
             try:
                 viewport = scene_viewer.curViewport()
@@ -1083,7 +1083,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'resolution': resolution,
                 }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Flipbook failed: {str(e)}')
+                return self._error_response('RENDER_FAILED', f'Flipbook failed: {str(e)}')
 
         self.send_json(flipbook())
 
@@ -1119,7 +1119,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
                         results.append({'index': i, 'type': op_type, 'result': result})
                     except Exception as e:
-                        results.append({'index': i, 'type': op_type, 'result': self._error_response('EXTRACTION_FAILED', str(e))})
+                        results.append({'index': i, 'type': op_type, 'result': self._error_response('BATCH_FAILED', str(e))})
 
             return {'results': results, 'count': len(results)}
 
@@ -1696,7 +1696,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'message': 'Cook initiated (non-blocking). Use houdini_pdg_status to poll progress.',
                 }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to cook PDG graph: {str(e)}')
+                return self._error_response('PDG_FAILED', f'Failed to cook PDG graph: {str(e)}')
 
         self.send_json(cook())
 
@@ -1739,7 +1739,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     node.dirtyAllTasks(False)
                 return {'success': True, 'path': path, 'dirty_all': dirty_all}
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to dirty PDG tasks: {str(e)}')
+                return self._error_response('PDG_FAILED', f'Failed to dirty PDG tasks: {str(e)}')
 
         self.send_json(dirty())
 
@@ -1769,7 +1769,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                 ctx.cancelCook()
                 return {'success': True, 'path': path}
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to cancel PDG cook: {str(e)}')
+                return self._error_response('PDG_FAILED', f'Failed to cancel PDG cook: {str(e)}')
 
         self.send_json(cancel())
 
@@ -1917,7 +1917,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         layer_info['root_prim_paths'] = []
                     layers.append(layer_info)
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to read layer stack: {str(e)}')
+                return self._error_response('LOP_FAILED', f'Failed to read layer stack: {str(e)}')
 
             # Active layer
             active_layer_id = None
@@ -1988,7 +1988,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'kind': kind,
                     })
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Search failed: {str(e)}')
+                return self._error_response('LOP_FAILED', f'Search failed: {str(e)}')
 
             return {
                 'node_path': path,
@@ -2044,7 +2044,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'file': file_path,
                     }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Import failed: {str(e)}')
+                return self._error_response('LOP_FAILED', f'Import failed: {str(e)}')
 
         self.send_json(do_import())
 
@@ -2084,7 +2084,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
                 return self._serialize_hda_definition(definition)
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to get HDA info: {str(e)}')
+                return self._error_response('HDA_FAILED', f'Failed to get HDA info: {str(e)}')
 
         self.send_json(get_hda())
 
@@ -2132,7 +2132,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                         'node_path': hda_node.path(),
                     }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to create HDA: {str(e)}')
+                return self._error_response('HDA_FAILED', f'Failed to create HDA: {str(e)}')
 
         self.send_json(create_hda())
 
@@ -2165,7 +2165,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'count': len(definitions),
                 }
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to install HDA: {str(e)}')
+                return self._error_response('HDA_FAILED', f'Failed to install HDA: {str(e)}')
 
         self.send_json(install())
 
@@ -2183,7 +2183,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     hou.hda.reloadAllFiles(rescan=True)
                     return {'success': True, 'message': 'All HDA files reloaded'}
             except Exception as e:
-                return self._error_response('EXTRACTION_FAILED', f'Failed to reload HDA: {str(e)}')
+                return self._error_response('HDA_FAILED', f'Failed to reload HDA: {str(e)}')
 
         self.send_json(reload())
 
@@ -2202,17 +2202,17 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
         def execute():
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             type_name = node.type().name()
             if 'VGGT' not in type_name:
-                return {'error': f'Node {path} is not a VGGT node (type: {type_name})'}
+                return self._error_response('TYPE_MISMATCH', f'Node {path} is not a VGGT node (type: {type_name})')
 
             # Call the HDA's on_execute via its PythonModule
             try:
                 hm = node.hm()
                 if not hasattr(hm, 'on_execute'):
-                    return {'error': f'Node {path} has no on_execute callback'}
+                    return self._error_response('TYPE_MISMATCH', f'Node {path} has no on_execute callback')
 
                 hm.on_execute({"node": node})
 
@@ -2237,7 +2237,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                     'result': result_data,
                 }
             except Exception as e:
-                return {'error': f'Execute failed: {str(e)}\n{traceback.format_exc()}'}
+                return self._error_response('OPERATION_FAILED', f'Execute failed: {str(e)}')
 
         self.send_json(execute())
 
@@ -2352,15 +2352,15 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
 
             node = hou.node(path)
             if not node:
-                return {'error': f'Node not found: {path}'}
+                return self._error_response('NODE_NOT_FOUND', f'Node not found: {path}')
 
             result_dir_parm = node.parm("_result_dir")
             if not result_dir_parm:
-                return {'error': f'Node {path} has no _result_dir parameter'}
+                return self._error_response('PARM_NOT_FOUND', f'Node {path} has no _result_dir parameter')
 
             result_dir = result_dir_parm.evalAsString()
             if not result_dir or not os.path.isdir(result_dir):
-                return {'error': 'No result directory found (node may not have been executed yet)'}
+                return self._error_response('NOT_FOUND', 'No result directory found (node may not have been executed yet)')
 
             artifacts = {'path': path, 'result_dir': result_dir}
 
@@ -2398,7 +2398,7 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
                             else:
                                 artifacts[key] = content
                 except Exception as e:
-                    artifacts[key] = {'error': f'Failed to read {filename}: {str(e)}'}
+                    artifacts[key] = self._error_response('READ_FAILED', f'Failed to read {filename}: {str(e)}')
 
             # List all files in result dir for reference
             try:

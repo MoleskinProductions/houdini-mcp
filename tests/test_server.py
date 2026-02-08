@@ -318,6 +318,120 @@ class TestBatchAndRender:
 
 
 # =============================================================================
+# Node & Parameter mutation tool tests
+# =============================================================================
+
+class TestNodeMutationTools:
+    """Test node creation, deletion, connection, and flag tools."""
+
+    @pytest.mark.asyncio
+    async def test_node_create(self):
+        """houdini_node_create should POST /node/create."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'path': '/obj/geo1/scatter1', 'name': 'scatter1', 'type': 'scatter'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/create', mock_data)):
+            result = await call_tool('houdini_node_create', {'parent': '/obj/geo1', 'type': 'scatter'})
+            assert 'scatter1' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_delete(self):
+        """houdini_node_delete should POST /node/delete."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'deleted': '/obj/geo1/scatter1'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/delete', mock_data)):
+            result = await call_tool('houdini_node_delete', {'path': '/obj/geo1/scatter1'})
+            assert 'success' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_connect(self):
+        """houdini_node_connect should POST /node/connect."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'from': '/obj/geo1/grid1', 'to': '/obj/geo1/scatter1'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/connect', mock_data)):
+            result = await call_tool('houdini_node_connect', {
+                'from': '/obj/geo1/grid1', 'to': '/obj/geo1/scatter1'
+            })
+            assert 'success' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_flag(self):
+        """houdini_node_flag should POST /node/flag."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'path': '/obj/geo1/scatter1', 'flag': 'display', 'value': True}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/flag', mock_data)):
+            result = await call_tool('houdini_node_flag', {
+                'path': '/obj/geo1/scatter1', 'flag': 'display', 'value': True
+            })
+            assert 'display' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_node_create_error(self):
+        """Node create with contract error should report the error."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'error': True, 'code': 'NODE_NOT_FOUND', 'message': 'Parent not found: /obj/missing'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/node/create', mock_data)):
+            result = await call_tool('houdini_node_create', {'parent': '/obj/missing', 'type': 'grid'})
+            text = result.content[0].text
+            assert 'NODE_NOT_FOUND' in text
+            assert 'error' in text.lower()
+
+
+class TestParmMutationTools:
+    """Test parameter set and revert tools."""
+
+    @pytest.mark.asyncio
+    async def test_parm_set(self):
+        """houdini_parm_set should POST /parm/set."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'parm': 'tx', 'value': 5.0}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/parm/set', mock_data)):
+            result = await call_tool('houdini_parm_set', {
+                'path': '/obj/geo1', 'parm': 'tx', 'value': 5.0
+            })
+            assert '5.0' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_parm_revert(self):
+        """houdini_parm_revert should POST /parm/revert."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'parm': 'tx', 'value': 0.0}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/parm/revert', mock_data)):
+            result = await call_tool('houdini_parm_revert', {'path': '/obj/geo1', 'parm': 'tx'})
+            assert 'success' in result.content[0].text
+
+
+class TestSceneTools:
+    """Test scene-level mutation tools."""
+
+    @pytest.mark.asyncio
+    async def test_scene_save(self):
+        """houdini_scene_save should POST /scene/save."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'path': '/tmp/test.hip'}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/scene/save', mock_data)):
+            result = await call_tool('houdini_scene_save', {})
+            assert 'test.hip' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_frame_set(self):
+        """houdini_frame_set should POST /frame/set."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'frame': 24}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/frame/set', mock_data)):
+            result = await call_tool('houdini_frame_set', {'frame': 24})
+            assert '24' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_geo_export(self):
+        """houdini_geo_export should POST /geo/export."""
+        from houdini_mcp.server import call_tool
+        mock_data = {'success': True, 'output': '/tmp/mesh.obj', 'format': 'obj', 'stats': {'points': 100}}
+        with patch('houdini_mcp.server.call_bridge', side_effect=_mock_bridge('POST', '/geo/export', mock_data)):
+            result = await call_tool('houdini_geo_export', {'path': '/obj/geo1/OUT', 'format': 'obj'})
+            assert 'mesh.obj' in result.content[0].text
+
+
+# =============================================================================
 # VGGT Tool tests
 # =============================================================================
 
