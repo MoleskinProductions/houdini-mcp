@@ -244,6 +244,124 @@ class TestCameraGetTool:
             assert matrix[2][2] == 1 and matrix[3][3] == 1
 
 
+class TestAttribReadEdgeCases:
+    """Test edge cases for houdini_attrib_read."""
+
+    @pytest.mark.asyncio
+    async def test_attrib_read_with_pagination(self):
+        """attrib_read should pass start/count params for pagination."""
+        from houdini_mcp.server import call_tool
+
+        async def mock_bridge_fn(method, endpoint, params=None, body=None):
+            assert method == 'GET'
+            assert endpoint == '/extract/attrib_read'
+            assert params['start'] == 100
+            assert params['count'] == 50
+            return {
+                'attrib_name': 'P', 'attrib_class': 'point', 'type': 'vector3',
+                'size': 3, 'count': 50, 'total': 5000,
+                'values': [[i, i + 0.1, i + 0.2] for i in range(50)],
+            }
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=mock_bridge_fn):
+            result = await call_tool('houdini_attrib_read', {
+                'path': '/obj/geo1/OUT', 'attrib_name': 'P',
+                'start': 100, 'count': 50,
+            })
+            text = result.content[0].text
+            assert '50' in text  # count=50
+
+    @pytest.mark.asyncio
+    async def test_attrib_read_missing_attrib_error(self):
+        """Missing attribute should return a contract error."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'error': True,
+            'code': 'PARM_NOT_FOUND',
+            'message': "Attribute 'nonexistent' not found on /obj/geo1/OUT",
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/extract/attrib_read', mock_data)):
+            result = await call_tool('houdini_attrib_read', {
+                'path': '/obj/geo1/OUT', 'attrib_name': 'nonexistent',
+            })
+            text = result.content[0].text
+            assert 'PARM_NOT_FOUND' in text
+            assert 'error' in text.lower()
+
+
+class TestExtractionErrorPaths:
+    """Test error paths for extraction tools."""
+
+    @pytest.mark.asyncio
+    async def test_aov_list_node_not_found(self):
+        """aov_list for missing node returns contract error."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {'error': True, 'code': 'NODE_NOT_FOUND', 'message': 'No node at /stage/missing'}
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/extract/aov_list', mock_data)):
+            result = await call_tool('houdini_aov_list', {'path': '/stage/missing'})
+            assert 'NODE_NOT_FOUND' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_camera_get_non_camera_node(self):
+        """camera_get on a non-camera node returns error."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'error': True, 'code': 'TYPE_MISMATCH',
+            'message': 'Node /obj/geo1 is not a camera',
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/extract/camera_get', mock_data)):
+            result = await call_tool('houdini_camera_get', {'path': '/obj/geo1'})
+            assert 'TYPE_MISMATCH' in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_geo_info_empty_geometry(self):
+        """geo_info on a node with empty geometry returns zeros."""
+        from houdini_mcp.server import call_tool
+
+        mock_data = {
+            'node_path': '/obj/geo1/null1', 'point_count': 0, 'prim_count': 0,
+            'vertex_count': 0, 'prim_types': {}, 'bounds': None,
+            'attributes': {'point': {}, 'primitive': {}, 'vertex': {}, 'detail': {}},
+            'groups': {'point': [], 'prim': []}, 'memory_bytes': 0,
+        }
+
+        with patch('houdini_mcp.server.call_bridge',
+                    side_effect=_mock_bridge('GET', '/extract/geo_info', mock_data)):
+            result = await call_tool('houdini_geo_info', {'path': '/obj/geo1/null1'})
+            import json
+            parsed = json.loads(result.content[0].text)
+            assert parsed['point_count'] == 0
+            assert parsed['prim_count'] == 0
+
+
+class TestConnectionErrorHandling:
+    """Test MCP server behavior when bridge is unreachable."""
+
+    @pytest.mark.asyncio
+    async def test_bridge_connection_error(self):
+        """Connection error should return a user-friendly error."""
+        import httpx
+
+        from houdini_mcp.server import call_tool
+
+        async def raise_connect_error(method, endpoint, params=None, body=None):
+            raise httpx.ConnectError("Connection refused")
+
+        with patch('houdini_mcp.server.call_bridge', side_effect=raise_connect_error):
+            result = await call_tool('houdini_ping', {})
+            text = result.content[0].text
+            assert 'ERROR' in text or 'error' in text.lower() or 'Connect' in text
+
+
 class TestContractErrorFormat:
     """Test §4.4 contract error format roundtrip."""
 
