@@ -61,6 +61,16 @@ def _classify_parm_type(template: Any) -> str:
     if type_name == 'Ramp':
         return 'ramp'
 
+    # Handle multiparm folders
+    if type_name == 'Folder':
+        try:
+            folder_type = template.folderType().name()
+            if 'Multiparm' in folder_type or 'MultiparmBlock' in folder_type:
+                return 'multiparm'
+        except Exception:
+            pass
+        return 'data'
+
     # Handle Float with multiple components
     if type_name == 'Float':
         num = template.numComponents()
@@ -132,6 +142,8 @@ def serialize_parm_contract(parm: Any) -> dict[str, Any]:
     value: Any
     if contract_type == 'ramp':
         value = _serialize_ramp(parm)
+    elif contract_type == 'multiparm':
+        value = _serialize_multiparm(parm, template)
     elif contract_type == 'button':
         value = None
     elif is_tuple:
@@ -234,6 +246,50 @@ def _serialize_ramp(parm: Any) -> dict[str, Any]:
         return {'ramp_type': ramp_type, 'keys': keys}
     except Exception:
         return {'ramp_type': 'float', 'keys': []}
+
+
+def _serialize_multiparm(parm: Any, template: Any) -> dict[str, Any]:
+    """Serialize a multiparm parameter to contract §2.2.2 schema.
+
+    Args:
+        parm: A hou.Parm for the multiparm count parameter.
+        template: The parm template (Folder with MultiparmBlock type).
+
+    Returns:
+        Multiparm value dict with count and instances array.
+    """
+    try:
+        # The parm for a multiparm folder is the instance count
+        count = int(parm.eval()) if hasattr(parm, 'eval') else 0
+
+        # Get the child parm templates that define each instance
+        child_templates = template.parmTemplates() if hasattr(template, 'parmTemplates') else []
+        base_names = [t.name() for t in child_templates if hasattr(t, 'name')]
+
+        # Read each instance's parameters
+        node = parm.node() if hasattr(parm, 'node') else None
+        instances: list[dict[str, Any]] = []
+
+        if node and base_names:
+            for i in range(1, count + 1):
+                instance: dict[str, Any] = {}
+                for base in base_names:
+                    # Multiparm instance parms are named base + index (e.g., layer_name_1)
+                    inst_name = f'{base}{i}'
+                    inst_parm = node.parm(inst_name)
+                    if inst_parm is not None:
+                        instance[inst_name] = inst_parm.eval()
+                    else:
+                        # Try without separator (some use base1, base2 pattern)
+                        inst_name_alt = f'{base}_{i}'
+                        inst_parm = node.parm(inst_name_alt)
+                        if inst_parm is not None:
+                            instance[inst_name_alt] = inst_parm.eval()
+                instances.append(instance)
+
+        return {'count': count, 'instances': instances}
+    except Exception:
+        return {'count': 0, 'instances': []}
 
 
 def serialize_node_contract(node: Any) -> dict[str, Any]:

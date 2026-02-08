@@ -107,7 +107,11 @@ class HoudiniBridgeHandler(BaseHTTPRequestHandler):
             ext_handler = ext_handlers.get(route)
             if ext_handler:
                 try:
-                    result = ext_handler(params)
+                    @require_main_thread
+                    def _run_extraction():
+                        return ext_handler(params)
+
+                    result = _run_extraction()
                     self.send_json(result)
                 except Exception as e:
                     self.send_error_json(

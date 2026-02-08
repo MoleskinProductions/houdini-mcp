@@ -4,6 +4,10 @@ Scene invalidation event system.
 Registers Houdini event callbacks to track scene changes and queues
 invalidation events that the MCP server can poll via /extract/events.
 Implements §5.2 of the pixel_vision interface contract.
+
+Required event types (all 7):
+  cook_complete, parm_changed, node_created, node_deleted,
+  connection_changed, frame_changed, hip_saved
 """
 
 from __future__ import annotations
@@ -27,6 +31,9 @@ _event_queue: list[dict[str, Any]] = []
 
 # Maximum events to buffer before dropping oldest
 _MAX_QUEUE_SIZE = 1000
+
+# Root network paths to monitor
+_ROOT_PATHS = ('/obj', '/stage', '/tasks', '/out', '/shop', '/mat')
 
 
 def _push_event(
@@ -90,34 +97,54 @@ def handle_drain_events(params: dict[str, str]) -> dict[str, Any]:
 
 _registered = False
 
+# Node event types we monitor on root networks.
+# These propagate from children, so registering on /obj catches
+# events from /obj/geo1/scatter1 etc.
+_NODE_EVENT_TYPES: tuple[Any, ...] = ()
+
 
 def start_invalidation() -> None:
     """Register Houdini event callbacks for scene change tracking.
 
-    Called by the bridge on startup. Hooks hipFile events and
-    root network child events to detect scene changes.
+    Called by the bridge on startup. Hooks:
+    - hipFile events → hip_saved
+    - Root network child events → node_created, node_deleted
+    - Root network node events → parm_changed, cook_complete, connection_changed
+    - Playbar events → frame_changed
+
     Safe to call multiple times (idempotent).
     """
-    global _registered
+    global _registered, _NODE_EVENT_TYPES
 
     if not IN_HOUDINI or _registered:
         return
 
+    # Build the event type tuple (hou must be available)
+    _NODE_EVENT_TYPES = (
+        hou.nodeEventType.ChildCreated,
+        hou.nodeEventType.ChildDeleted,
+        hou.nodeEventType.ParmTupleChanged,
+        hou.nodeEventType.InputRewired,
+    )
+
+    # Hip file events (save, load)
     try:
-        # Hip file events (save, load)
         hou.hipFile.addEventCallback(_hip_event_callback)
     except Exception:
         pass
 
-    try:
-        # Child created/deleted on root networks
-        for root_path in ('/obj', '/stage', '/tasks', '/out', '/shop', '/mat'):
+    # Node events on root networks
+    for root_path in _ROOT_PATHS:
+        try:
             root = hou.node(root_path)
             if root is not None:
-                root.addEventCallback(
-                    (hou.nodeEventType.ChildCreated, hou.nodeEventType.ChildDeleted),
-                    _child_event_callback,
-                )
+                root.addEventCallback(_NODE_EVENT_TYPES, _node_event_callback)
+        except Exception:
+            continue
+
+    # Frame changed via playbar
+    try:
+        hou.playbar.addEventCallback(_playbar_event_callback)
     except Exception:
         pass
 
@@ -139,25 +166,30 @@ def stop_invalidation() -> None:
     except Exception:
         pass
 
-    try:
-        for root_path in ('/obj', '/stage', '/tasks', '/out', '/shop', '/mat'):
+    for root_path in _ROOT_PATHS:
+        try:
             root = hou.node(root_path)
             if root is not None:
-                root.removeEventCallback(
-                    (hou.nodeEventType.ChildCreated, hou.nodeEventType.ChildDeleted),
-                    _child_event_callback,
-                )
+                root.removeEventCallback(_NODE_EVENT_TYPES, _node_event_callback)
+        except Exception:
+            continue
+
+    try:
+        hou.playbar.removeEventCallback(_playbar_event_callback)
     except Exception:
         pass
 
     _registered = False
 
 
+# ============================================================================
+# Callback implementations
+# ============================================================================
+
 def _hip_event_callback(event_type: Any) -> None:
-    """Callback for hipFile events."""
+    """Callback for hipFile events → hip_saved."""
     try:
         event_name = str(event_type)
-        # Map hou.hipFileEventType to our event types
         if 'AfterSave' in event_name:
             _push_event('hip_saved', scope='scene', path=hou.hipFile.path())
         elif 'AfterLoad' in event_name or 'AfterClear' in event_name:
@@ -166,19 +198,37 @@ def _hip_event_callback(event_type: Any) -> None:
         pass
 
 
-def _child_event_callback(event_type: Any, **kwargs: Any) -> None:
-    """Callback for child created/deleted events on root networks."""
-    try:
-        child_node = kwargs.get('child_node')
-        parent = kwargs.get('node')
+def _node_event_callback(event_type: Any, **kwargs: Any) -> None:
+    """Callback for node events on root networks.
 
+    Handles: ChildCreated, ChildDeleted, ParmTupleChanged, InputRewired.
+    """
+    try:
         event_name = str(event_type)
-        parent_path = parent.path() if parent else '/'
-        child_path = child_node.path() if child_node else parent_path
+        node = kwargs.get('node')
+        node_path = node.path() if node else '/'
 
         if 'ChildCreated' in event_name:
+            child_node = kwargs.get('child_node')
+            child_path = child_node.path() if child_node else node_path
             _push_event('node_created', scope='network', path=child_path)
         elif 'ChildDeleted' in event_name:
-            _push_event('node_deleted', scope='network', path=parent_path)
+            _push_event('node_deleted', scope='network', path=node_path)
+        elif 'ParmTupleChanged' in event_name:
+            parm_tuple = kwargs.get('parm_tuple')
+            parm_name = parm_tuple.name() if parm_tuple else ''
+            _push_event('parm_changed', scope='node', path=f'{node_path}/{parm_name}')
+        elif 'InputRewired' in event_name:
+            _push_event('connection_changed', scope='node', path=node_path)
+    except Exception:
+        pass
+
+
+def _playbar_event_callback(event_type: Any, frame: float) -> None:
+    """Callback for playbar events → frame_changed."""
+    try:
+        event_name = str(event_type)
+        if 'FrameChanged' in event_name:
+            _push_event('frame_changed', scope='scene', path=f'frame:{frame}')
     except Exception:
         pass

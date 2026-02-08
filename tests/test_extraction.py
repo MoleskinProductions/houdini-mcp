@@ -127,6 +127,60 @@ class TestClassifyAttribType:
         assert classify_attrib_type(self._make_attrib('String', 1)) == ('string', 1)
 
 
+class TestMultiparmClassification:
+    """Test multiparm type classification."""
+
+    def test_folder_multiparm_block(self):
+        from houdini_extraction.serializers import _classify_parm_type
+        tmpl = MagicMock()
+        tmpl.type().name.return_value = 'Folder'
+        tmpl.folderType().name.return_value = 'MultiparmBlock'
+        assert _classify_parm_type(tmpl) == 'multiparm'
+
+    def test_folder_non_multiparm(self):
+        from houdini_extraction.serializers import _classify_parm_type
+        tmpl = MagicMock()
+        tmpl.type().name.return_value = 'Folder'
+        tmpl.folderType().name.return_value = 'Simple'
+        assert _classify_parm_type(tmpl) == 'data'
+
+    def test_serialize_multiparm(self):
+        from houdini_extraction.serializers import _serialize_multiparm
+
+        # Mock parm (instance count)
+        parm = MagicMock()
+        parm.eval.return_value = 2
+
+        # Mock node with instance parms
+        node = MagicMock()
+        parm.node.return_value = node
+
+        def mock_parm(name):
+            values = {
+                'layer_name1': MagicMock(eval=MagicMock(return_value='base')),
+                'layer_name2': MagicMock(eval=MagicMock(return_value='detail')),
+                'layer_weight1': MagicMock(eval=MagicMock(return_value=1.0)),
+                'layer_weight2': MagicMock(eval=MagicMock(return_value=0.5)),
+            }
+            return values.get(name)
+
+        node.parm.side_effect = mock_parm
+
+        # Mock template with child parm templates
+        template = MagicMock()
+        child_tmpl1 = MagicMock()
+        child_tmpl1.name.return_value = 'layer_name'
+        child_tmpl2 = MagicMock()
+        child_tmpl2.name.return_value = 'layer_weight'
+        template.parmTemplates.return_value = [child_tmpl1, child_tmpl2]
+
+        result = _serialize_multiparm(parm, template)
+        assert result['count'] == 2
+        assert len(result['instances']) == 2
+        assert result['instances'][0]['layer_name1'] == 'base'
+        assert result['instances'][1]['layer_weight2'] == 0.5
+
+
 class TestSerializeNodeContract:
     """Test serialize_node_contract against §2.1 schema."""
 
@@ -306,6 +360,28 @@ class TestInvalidation:
         result = handle_drain_events({})
         assert result['count'] == 1
         assert result['events'][0]['event'] == 'invalidate'
+
+    def test_all_seven_event_types(self):
+        """§5.2: All 7 event types can be pushed and drained."""
+        from houdini_extraction.invalidation import _event_queue, _push_event, drain_events
+
+        _event_queue.clear()
+
+        _push_event('cook_complete', scope='node', path='/obj/geo1/scatter1')
+        _push_event('parm_changed', scope='node', path='/obj/geo1/scatter1/count')
+        _push_event('node_created', scope='network', path='/obj/geo2')
+        _push_event('node_deleted', scope='network', path='/obj')
+        _push_event('connection_changed', scope='node', path='/obj/geo1/scatter1')
+        _push_event('frame_changed', scope='scene', path='frame:24.0')
+        _push_event('hip_saved', scope='scene', path='/tmp/test.hip')
+
+        events = drain_events()
+        assert len(events) == 7
+        types = [e['event_type'] for e in events]
+        assert types == [
+            'cook_complete', 'parm_changed', 'node_created', 'node_deleted',
+            'connection_changed', 'frame_changed', 'hip_saved',
+        ]
 
     def test_event_queue_cap(self):
         from houdini_extraction.invalidation import (
